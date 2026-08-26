@@ -536,3 +536,94 @@ describe('query', () => {
     expect((await captureError(clientWith(fetchImpl).query(params))).code).toBe('INVALID_INPUT')
   })
 })
+
+function matrix(seriesCount: number, pointsPerSeries: number) {
+  return {
+    status: 'success',
+    data: {
+      resultType: 'matrix',
+      result: Array.from({ length: seriesCount }, (_, s) => ({
+        metric: { instance: `host-${s}` },
+        values: Array.from({ length: pointsPerSeries }, (_, p) => [1_700_000_000 + p * 15, '1']),
+      })),
+    },
+  }
+}
+
+const RANGE = {
+  datasourceUid: 'prom-1',
+  query: 'up',
+  start: '1700000000',
+  end: '1700003600',
+}
+
+describe('queryRange', () => {
+  it('derives a step from the range when none is given', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query_range': () => jsonResponse(matrix(1, 10)),
+    })
+    const result = await clientWith(fetchImpl).queryRange(RANGE)
+
+    const url = new URL(String(fetchImpl.mock.calls[1]?.[0]))
+    expect(url.pathname.endsWith('/api/v1/query_range')).toBe(true)
+    expect(url.searchParams.get('step')).toBe('30')
+    expect(result.meta).toMatchObject({ stepApplied: 30, stepAuto: true, maxPoints: 200 })
+  })
+
+  it('sends an explicit step verbatim in whole seconds', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query_range': () => jsonResponse(matrix(1, 10)),
+    })
+    const result = await clientWith(fetchImpl).queryRange({ ...RANGE, step: '5m' })
+
+    const url = new URL(String(fetchImpl.mock.calls[1]?.[0]))
+    expect(url.searchParams.get('step')).toBe('300')
+    expect(result.meta).toMatchObject({ stepApplied: 300, stepAuto: false })
+  })
+
+  it('refuses an explicit step that would exceed max_points, before issuing any request', async () => {
+    const fetchImpl = vi.fn()
+    const error = await captureError(
+      clientWith(fetchImpl).queryRange({ ...RANGE, step: '1s', maxPoints: 10 }),
+    )
+
+    expect(error.code).toBe('QUERY_RANGE_TOO_LARGE')
+    expect(error.message).toContain('3600')
+    expect(error.message).toContain('10')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('trims whole series when the total point budget is exceeded', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query_range': () => jsonResponse(matrix(100, 500)),
+    })
+    const result = await clientWith(fetchImpl, { maxResponseBytes: 20_000_000 }).queryRange({
+      ...RANGE,
+      maxPoints: 500,
+    })
+    const series = (result.data as { result: { values: unknown[] }[] }).result
+
+    expect(series).toHaveLength(40)
+    expect(series.every((entry) => entry.values.length === 500)).toBe(true)
+    expect(result.meta).toMatchObject({ truncated: true, totalPoints: 20_000, seriesTotal: 100 })
+  })
+
+  it.each([
+    [{ start: '1700003600', end: '1700000000' }],
+    [{ end: 'not-a-time' }],
+    [{ step: '1h30m' }],
+    [{ step: '500ms' }],
+    [{ maxPoints: 0 }],
+    [{ maxPoints: 501 }],
+    [{ start: '1600000000' }],
+  ])('rejects invalid range arguments %o', async (overrides) => {
+    const fetchImpl = vi.fn()
+    expect(
+      (await captureError(clientWith(fetchImpl).queryRange({ ...RANGE, ...overrides }))).code,
+    ).toBe('INVALID_INPUT')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
