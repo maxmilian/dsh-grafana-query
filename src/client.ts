@@ -1,7 +1,19 @@
 import type { GrafanaConfig, ResolvedGrafanaConfig } from './config.js'
-import { resolveConfig, validateResolvedConfig } from './config.js'
-import { createHttpError, GrafanaApiError, safeHeader } from './errors.js'
-import type { ApiResult, JsonArray, JsonObject, JsonValue } from './types.js'
+import {
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+  resolveConfig,
+  validateResolvedConfig,
+} from './config.js'
+import { createHttpError, GrafanaApiError, inputError, safeHeader } from './errors.js'
+import type {
+  ApiResult,
+  DatasourceMeta,
+  JsonArray,
+  JsonObject,
+  JsonValue,
+  ListDatasourcesParams,
+} from './types.js'
 
 export { resolveConfig }
 
@@ -21,6 +33,7 @@ interface RequestContext {
 export class GrafanaClient {
   readonly #config: ResolvedGrafanaConfig
   readonly #fetch: FetchImplementation
+  readonly #datasourceCache = new Map<string, DatasourceMeta>()
 
   /** Creates a client from resolved configuration. */
   constructor(config: ResolvedGrafanaConfig, fetchImplementation: FetchImplementation = fetch) {
@@ -32,6 +45,27 @@ export class GrafanaClient {
   async health(signal?: AbortSignal): Promise<ApiResult> {
     const body = expectObject(await this.#get('api/health', new URLSearchParams(), signal))
     return { data: { database: body.database ?? null, version: body.version ?? null }, meta: {} }
+  }
+
+  /** Lists data sources with safe fields only, filtered and paginated client-side. */
+  async listDatasources(params: ListDatasourcesParams, signal?: AbortSignal): Promise<ApiResult> {
+    const page = assertPage(params.page)
+    const pageSize = assertPageSize(params.pageSize)
+    if (params.nameContains !== undefined) assertText('nameContains', params.nameContains, 200)
+    if (params.type !== undefined) assertText('type', params.type, 100)
+
+    const raw = expectArray(await this.#get('api/datasources', new URLSearchParams(), signal))
+    const all = raw.filter(isJsonObject).map(readDatasource)
+    for (const entry of all) {
+      this.#datasourceCache.set(entry.uid, { type: entry.type, access: entry.access })
+    }
+
+    const matched = all.filter((entry) => matchesDatasource(entry, params))
+    const start = (page - 1) * pageSize
+    return {
+      data: { datasources: matched.slice(start, start + pageSize).map(toPublicDatasource) },
+      meta: { total: matched.length, page, pageSize },
+    }
   }
 
   async #get(endpoint: string, query: URLSearchParams, signal?: AbortSignal): Promise<JsonValue> {
@@ -185,4 +219,89 @@ function responseTooLarge(maximum: number): GrafanaApiError {
     `Grafana response exceeded the configured maximum of ${maximum} bytes.`,
     { code: 'RESPONSE_TOO_LARGE' },
   )
+}
+
+interface DatasourceRecord {
+  readonly uid: string
+  readonly name: string
+  readonly type: string
+  readonly isDefault: boolean
+  readonly access: string
+  readonly readOnly: boolean
+  readonly url?: string
+}
+
+function readDatasource(entry: JsonObject): DatasourceRecord {
+  return {
+    uid: readString(entry.uid) ?? '',
+    name: readString(entry.name) ?? '',
+    type: readString(entry.type) ?? '',
+    isDefault: entry.isDefault === true,
+    access: readString(entry.access) ?? '',
+    readOnly: entry.readOnly === true,
+    url: sanitizeUrl(readString(entry.url)),
+  }
+}
+
+function toPublicDatasource(entry: DatasourceRecord): JsonObject {
+  const base: JsonObject = {
+    uid: entry.uid,
+    name: entry.name,
+    type: entry.type,
+    isDefault: entry.isDefault,
+    access: entry.access,
+    readOnly: entry.readOnly,
+  }
+  if (entry.access !== 'direct' && entry.url) base.url = entry.url
+  return base
+}
+
+function matchesDatasource(entry: DatasourceRecord, params: ListDatasourcesParams): boolean {
+  if (params.type && entry.type.toLowerCase() !== params.type.toLowerCase()) return false
+  if (
+    params.nameContains &&
+    !entry.name.toLowerCase().includes(params.nameContains.toLowerCase())
+  ) {
+    return false
+  }
+  return true
+}
+
+function sanitizeUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  try {
+    const url = new URL(value)
+    url.username = ''
+    url.password = ''
+    return url.toString()
+  } catch {
+    return undefined
+  }
+}
+
+function readString(value: JsonValue | undefined): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function isJsonObject(value: JsonValue): value is JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function assertText(name: string, value: string, maximum: number): void {
+  if (!value.trim() || value.length > maximum) {
+    throw inputError(`${name} must contain 1-${maximum} characters.`)
+  }
+}
+
+function assertPage(value = 1): number {
+  if (!Number.isSafeInteger(value) || value < 1)
+    throw inputError('page must be a positive integer.')
+  return value
+}
+
+function assertPageSize(value = DEFAULT_PAGE_SIZE): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_PAGE_SIZE) {
+    throw inputError(`pageSize must be an integer between 1 and ${MAX_PAGE_SIZE}.`)
+  }
+  return value
 }

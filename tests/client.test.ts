@@ -161,3 +161,100 @@ describe('health', () => {
     expect(client).toBeInstanceOf(GrafanaClient)
   })
 })
+
+const DATASOURCES = [
+  {
+    uid: 'prom-1',
+    name: 'Prometheus Prod',
+    type: 'prometheus',
+    isDefault: true,
+    access: 'proxy',
+    readOnly: false,
+    url: 'https://user:pass@prom.example.com',
+    password: 'hunter2',
+    basicAuthPassword: 'hunter2',
+    secureJsonFields: { httpHeaderValue1: true },
+    jsonData: { httpMethod: 'POST' },
+    typeLogoUrl: 'public/img/prom.svg',
+  },
+  {
+    uid: 'loki-1',
+    name: 'Loki',
+    type: 'loki',
+    isDefault: false,
+    access: 'proxy',
+    readOnly: false,
+    url: 'https://loki.example.com',
+  },
+  {
+    uid: 'browser-1',
+    name: 'Direct',
+    type: 'prometheus',
+    isDefault: false,
+    access: 'direct',
+    readOnly: true,
+    url: 'https://direct.example.com',
+  },
+]
+
+describe('listDatasources', () => {
+  it('whitelists safe fields and strips credentials from the URL', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(DATASOURCES))
+    const result = await clientWith(fetchImpl).listDatasources({})
+    const serialized = JSON.stringify(result)
+
+    expect(serialized).not.toMatch(
+      /password|basicAuthPassword|secureJsonFields|jsonData|typeLogoUrl|hunter2/,
+    )
+    expect((result.data as { datasources: unknown[] }).datasources[0]).toEqual({
+      uid: 'prom-1',
+      name: 'Prometheus Prod',
+      type: 'prometheus',
+      isDefault: true,
+      access: 'proxy',
+      readOnly: false,
+      url: 'https://prom.example.com/',
+    })
+  })
+
+  it('omits the URL for direct-access data sources', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(DATASOURCES))
+    const result = await clientWith(fetchImpl).listDatasources({ nameContains: 'direct' })
+    expect(
+      (result.data as { datasources: Record<string, unknown>[] }).datasources[0],
+    ).not.toHaveProperty('url')
+  })
+
+  it('filters by type and name before paginating', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(DATASOURCES))
+    const result = await clientWith(fetchImpl).listDatasources({
+      type: 'PROMETHEUS',
+      pageSize: 1,
+      page: 2,
+    })
+
+    expect(result.meta).toEqual({ total: 2, page: 2, pageSize: 1 })
+    expect(result.meta).not.toHaveProperty('truncated')
+    const uids = (result.data as { datasources: { uid: string }[] }).datasources.map((d) => d.uid)
+    expect(uids).toEqual(['browser-1'])
+  })
+
+  it('accepts a top-level JSON array without raising INVALID_RESPONSE', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse([]))
+    await expect(clientWith(fetchImpl).listDatasources({})).resolves.toMatchObject({
+      meta: { total: 0 },
+    })
+  })
+
+  it.each([
+    [{ page: 0 }],
+    [{ pageSize: 0 }],
+    [{ pageSize: 101 }],
+    [{ nameContains: 'x'.repeat(201) }],
+  ])('rejects invalid pagination or filters %o', async (params) => {
+    const fetchImpl = vi.fn(async () => jsonResponse(DATASOURCES))
+    expect((await captureError(clientWith(fetchImpl).listDatasources(params))).code).toBe(
+      'INVALID_INPUT',
+    )
+  })
+})
