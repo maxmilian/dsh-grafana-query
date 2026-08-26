@@ -14,6 +14,7 @@ import {
   safeHeader,
 } from './errors.js'
 import type {
+  AlertStateParams,
   ApiResult,
   DatasourceMeta,
   JsonArray,
@@ -125,6 +126,42 @@ export class GrafanaClient {
     if (warnings) meta.warnings = warnings
     if (meta.truncated) meta.hint = SERIES_HINT
     return { data: { resultType: data.resultType ?? null, result: kept }, meta }
+  }
+
+  /** Returns the current state of Grafana unified alerting rules. */
+  async alertState(params: AlertStateParams, signal?: AbortSignal): Promise<ApiResult> {
+    const states = assertStates(params.state)
+    const page = assertPage(params.page)
+    const pageSize = assertPageSize(params.pageSize)
+    const maxInstances = assertInstances(params.maxInstancesPerRule)
+
+    const body = expectObject(
+      await this.#getAlerting('api/prometheus/grafana/api/v1/rules', signal),
+    )
+    const flattened = flattenAlertRules(body, params.includeInstances !== false, maxInstances)
+    const counts = countStates(flattened.rules)
+    const matched = flattened.rules.filter((rule) => matchesAlertRule(rule, states, params))
+    const capped = matched.slice(0, MAX_ALERT_RULES)
+    const start = (page - 1) * pageSize
+
+    const meta: JsonObject = {
+      total: matched.length,
+      page,
+      pageSize,
+      truncated: matched.length > capped.length,
+      stateVocabulary: flattened.normalized ? 'grafana-normalized' : 'prometheus',
+      counts,
+    }
+    if (meta.truncated) meta.hint = ALERT_HINT
+    return { data: { rules: capped.slice(start, start + pageSize) }, meta }
+  }
+
+  async #getAlerting(endpoint: string, signal?: AbortSignal): Promise<JsonValue> {
+    try {
+      return await this.#get(endpoint, new URLSearchParams(), signal)
+    } catch (error: unknown) {
+      throw translateAlertingError(error)
+    }
   }
 
   async #datasourceMeta(uid: string, signal?: AbortSignal): Promise<DatasourceMeta | undefined> {
@@ -375,7 +412,7 @@ function readString(value: JsonValue | undefined): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
-function isJsonObject(value: JsonValue): value is JsonObject {
+function isJsonObject(value: JsonValue | undefined): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
@@ -607,4 +644,185 @@ function finalizeRange(result: ApiResult, step: ResolvedStep, maxPoints: number)
   }
   if (truncated) meta.hint = SERIES_HINT
   return { data: { resultType: data.resultType, result: kept }, meta }
+}
+
+const MAX_ALERT_RULES = 500
+const MAX_INSTANCES_PER_RULE = 50
+const DEFAULT_INSTANCES_PER_RULE = 10
+const MAX_ANNOTATION_CHARS = 500
+const MAX_INSTANCE_VALUE_CHARS = 200
+const ANNOTATION_KEYS = ['summary', 'description', 'runbook_url'] as const
+const ALERT_STATES = ['firing', 'pending', 'inactive', 'unknown'] as const
+const DEFAULT_ALERT_STATES: readonly string[] = ['firing', 'pending', 'unknown']
+const STATE_ALIASES: Record<string, string> = {
+  alerting: 'firing',
+  firing: 'firing',
+  pending: 'pending',
+  inactive: 'inactive',
+  normal: 'inactive',
+  ok: 'inactive',
+}
+const ALERT_HINT = 'Narrow the result with rule_contains or folder_contains.'
+
+interface FlattenedRules {
+  readonly rules: JsonObject[]
+  readonly normalized: boolean
+}
+
+/** Maps a Grafana or Prometheus alert state onto the Prometheus vocabulary. */
+export function normalizeAlertState(value: string): { state: string; normalized: boolean } {
+  const lower = value.trim().toLowerCase()
+  const mapped = STATE_ALIASES[lower]
+  if (!mapped) return { state: 'unknown', normalized: true }
+  return { state: mapped, normalized: mapped !== value }
+}
+
+function translateAlertingError(error: unknown): unknown {
+  if (error instanceof GrafanaApiError && error.code === 'NOT_FOUND') {
+    return new GrafanaApiError(
+      'Grafana unified alerting is unavailable on this instance. This plugin requires Grafana 9.0 or newer with unified alerting enabled.',
+      { code: 'ALERTING_UNAVAILABLE', status: error.status },
+    )
+  }
+  return error
+}
+
+function assertStates(value: readonly string[] | undefined): readonly string[] {
+  if (value === undefined) return DEFAULT_ALERT_STATES
+  if (value.length < 1 || value.length > ALERT_STATES.length) {
+    throw inputError(`state must contain 1-${ALERT_STATES.length} values.`)
+  }
+  for (const entry of value) {
+    if (!ALERT_STATES.includes(entry as (typeof ALERT_STATES)[number])) {
+      throw inputError(`state values must be one of ${ALERT_STATES.join(', ')}.`)
+    }
+  }
+  return value
+}
+
+function assertInstances(value = DEFAULT_INSTANCES_PER_RULE): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_INSTANCES_PER_RULE) {
+    throw inputError(
+      `maxInstancesPerRule must be an integer between 1 and ${MAX_INSTANCES_PER_RULE}.`,
+    )
+  }
+  return value
+}
+
+function trimAnnotations(value: JsonValue | undefined): JsonObject {
+  if (!value || !isJsonObject(value)) return {}
+  const result: JsonObject = {}
+  for (const key of ANNOTATION_KEYS) {
+    const entry = readString(value[key])
+    if (entry) result[key] = entry.slice(0, MAX_ANNOTATION_CHARS)
+  }
+  return result
+}
+
+function readInstances(
+  value: JsonValue | undefined,
+  maxInstances: number,
+): { kept: JsonObject[]; total: number } {
+  const all = Array.isArray(value) ? value.filter(isJsonObject) : []
+  const kept = all.slice(0, maxInstances).map((entry) => {
+    const raw = readString(entry.state) ?? ''
+    return {
+      labels: entry.labels ?? {},
+      state: normalizeAlertState(raw).state,
+      activeAt: entry.activeAt ?? null,
+      value: (readString(entry.value) ?? '').slice(0, MAX_INSTANCE_VALUE_CHARS),
+    }
+  })
+  return { kept, total: all.length }
+}
+
+function toFlatRule(
+  rule: JsonObject,
+  group: JsonObject,
+  includeInstances: boolean,
+  maxInstances: number,
+): { rule: JsonObject; normalized: boolean } {
+  const raw = readString(rule.state) ?? ''
+  const state = normalizeAlertState(raw)
+  const flat = baseFlatRule(rule, group, state.state)
+  if (state.state === 'unknown' && raw) flat.stateRaw = raw
+  if (includeInstances) attachInstances(flat, rule.alerts, maxInstances)
+  return { rule: flat, normalized: state.normalized }
+}
+
+function baseFlatRule(rule: JsonObject, group: JsonObject, state: string): JsonObject {
+  return {
+    group: readString(group.name) ?? '',
+    folder: readString(group.file) ?? '',
+    name: readString(rule.name) ?? '',
+    state,
+    health: readString(rule.health) ?? '',
+    labels: rule.labels ?? {},
+    annotations: trimAnnotations(rule.annotations),
+    lastEvaluation: rule.lastEvaluation ?? null,
+    evaluationTime: rule.evaluationTime ?? null,
+    duration: rule.duration ?? null,
+  }
+}
+
+function attachInstances(
+  flat: JsonObject,
+  alerts: JsonValue | undefined,
+  maxInstances: number,
+): void {
+  const instances = readInstances(alerts, maxInstances)
+  flat.activeInstances = instances.kept
+  if (instances.total > instances.kept.length) {
+    flat.instancesTruncated = true
+    flat.instancesTotal = instances.total
+  }
+}
+
+function flattenAlertRules(
+  body: JsonObject,
+  includeInstances: boolean,
+  maxInstances: number,
+): FlattenedRules {
+  const data = isJsonObject(body.data) ? body.data : {}
+  const groups = Array.isArray(data.groups) ? data.groups.filter(isJsonObject) : []
+  const rules: JsonObject[] = []
+  let normalized = false
+  for (const group of groups) {
+    const groupRules = Array.isArray(group.rules) ? group.rules.filter(isJsonObject) : []
+    for (const rule of groupRules) {
+      const flat = toFlatRule(rule, group, includeInstances, maxInstances)
+      if (flat.normalized) normalized = true
+      rules.push(flat.rule)
+    }
+  }
+  return { rules, normalized }
+}
+
+function countStates(rules: readonly JsonObject[]): JsonObject {
+  const counts: Record<string, number> = { firing: 0, pending: 0, inactive: 0, unknown: 0 }
+  for (const rule of rules) {
+    const state = readString(rule.state) ?? 'unknown'
+    counts[state] = (counts[state] ?? 0) + 1
+  }
+  return counts
+}
+
+function matchesAlertRule(
+  rule: JsonObject,
+  states: readonly string[],
+  params: AlertStateParams,
+): boolean {
+  if (!states.includes(readString(rule.state) ?? '')) return false
+  const folder = readString(rule.folder) ?? ''
+  const name = readString(rule.name) ?? ''
+  if (
+    params.folderContains &&
+    !folder.toLowerCase().includes(params.folderContains.toLowerCase())
+  ) {
+    return false
+  }
+  if (params.ruleContains && !name.toLowerCase().includes(params.ruleContains.toLowerCase())) {
+    return false
+  }
+  return true
 }
