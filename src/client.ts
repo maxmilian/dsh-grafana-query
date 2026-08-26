@@ -866,20 +866,24 @@ function summarizeQueryNode(node: JsonObject): JsonObject {
   return summary
 }
 
+const PROVISIONED_STRING_KEYS = [
+  'uid',
+  'title',
+  'folderUID',
+  'ruleGroup',
+  'condition',
+  'noDataState',
+  'execErrState',
+] as const
+
 function toPublicAlertRule(rule: JsonObject, includeQuery: boolean): JsonObject {
   const result: JsonObject = {
-    uid: readString(rule.uid) ?? '',
-    title: readString(rule.title) ?? '',
-    folderUID: readString(rule.folderUID) ?? '',
-    ruleGroup: readString(rule.ruleGroup) ?? '',
-    condition: readString(rule.condition) ?? '',
     for: rule.for ?? null,
     isPaused: rule.isPaused === true,
-    noDataState: readString(rule.noDataState) ?? '',
-    execErrState: readString(rule.execErrState) ?? '',
     labels: rule.labels ?? {},
     annotations: trimAnnotations(rule.annotations),
   }
+  for (const key of PROVISIONED_STRING_KEYS) result[key] = readString(rule[key]) ?? ''
   if (includeQuery) {
     const nodes = Array.isArray(rule.data) ? rule.data.filter(isJsonObject) : []
     result.data = nodes.map(summarizeQueryNode)
