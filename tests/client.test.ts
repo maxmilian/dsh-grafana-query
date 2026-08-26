@@ -759,3 +759,94 @@ describe('alertState', () => {
     },
   )
 })
+
+const PROVISIONED = [
+  {
+    uid: 'rule-1',
+    title: 'HighCPU',
+    folderUID: 'folder-1',
+    ruleGroup: 'cpu',
+    condition: 'C',
+    for: '5m',
+    isPaused: false,
+    noDataState: 'NoData',
+    execErrState: 'Error',
+    labels: { severity: 'critical' },
+    annotations: { summary: 's', description: 'd', runbook_url: 'r', internal: 'x' },
+    data: [
+      { refId: 'A', datasourceUid: 'prom-1', model: { expr: 'rate(cpu[5m])', extra: 'noise' } },
+      { refId: 'C', datasourceUid: '__expr__', model: { type: 'threshold' } },
+    ],
+  },
+]
+
+describe('listAlertRules', () => {
+  it('drops the query model unless include_query is set', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(PROVISIONED))
+    const result = await clientWith(fetchImpl).listAlertRules({})
+    const rule = (result.data as { rules: Record<string, unknown>[] }).rules[0]
+
+    expect(rule).not.toHaveProperty('data')
+    expect(JSON.stringify(result)).not.toContain('noise')
+    expect(Object.keys((rule?.annotations ?? {}) as object).sort()).toEqual([
+      'description',
+      'runbook_url',
+      'summary',
+    ])
+  })
+
+  it('summarizes each query node when include_query is set', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(PROVISIONED))
+    const result = await clientWith(fetchImpl).listAlertRules({ includeQuery: true })
+    const rule = (result.data as { rules: { data: Record<string, unknown>[] }[] }).rules[0]
+
+    expect(rule?.data).toEqual([
+      { refId: 'A', datasourceUid: 'prom-1', expr: 'rate(cpu[5m])' },
+      { refId: 'C', datasourceUid: '__expr__', type: 'threshold' },
+    ])
+  })
+
+  it('filters by folder, group, and title before paginating', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(PROVISIONED))
+    const client = clientWith(fetchImpl)
+
+    await expect(client.listAlertRules({ folderUid: 'nope' })).resolves.toMatchObject({
+      meta: { total: 0 },
+    })
+    await expect(client.listAlertRules({ titleContains: 'highcpu' })).resolves.toMatchObject({
+      meta: { total: 1 },
+    })
+    await expect(client.listAlertRules({ ruleGroup: 'cpu' })).resolves.toMatchObject({
+      meta: { total: 1 },
+    })
+  })
+
+  it('accepts the top-level array shape returned by the provisioning API', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse([]))
+    await expect(clientWith(fetchImpl).listAlertRules({})).resolves.toMatchObject({
+      meta: { total: 0 },
+    })
+  })
+
+  it('reports the pre-truncation total and refuses to page past the cap', async () => {
+    const many = Array.from({ length: 900 }, (_, i) => ({
+      uid: `u-${i}`,
+      title: `r-${i}`,
+      ruleGroup: 'g',
+    }))
+    const fetchImpl = vi.fn(async () => jsonResponse(many))
+    const client = clientWith(fetchImpl, { maxResponseBytes: 1_000_000 })
+
+    expect((await client.listAlertRules({})).meta).toMatchObject({ total: 900, truncated: true })
+    expect(
+      ((await client.listAlertRules({ page: 26 })).data as { rules: unknown[] }).rules,
+    ).toEqual([])
+  })
+
+  it('maps a 404 to ALERTING_UNAVAILABLE', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 404 }))
+    expect((await captureError(clientWith(fetchImpl).listAlertRules({}))).code).toBe(
+      'ALERTING_UNAVAILABLE',
+    )
+  })
+})
