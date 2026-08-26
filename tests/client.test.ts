@@ -1,0 +1,163 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { createGrafanaClient, GrafanaClient } from '../src/client.js'
+import type { ResolvedGrafanaConfig } from '../src/config.js'
+import type { GrafanaApiError } from '../src/errors.js'
+
+type MockFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+
+const BASE_CONFIG: ResolvedGrafanaConfig = {
+  baseUrl: 'https://grafana.example.com/grafana/',
+  token: 'glsa_secret',
+  locale: 'en',
+  requestTimeoutMs: 1_000,
+  maxResponseBytes: 10_000,
+  maxSeries: 100,
+}
+
+function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+    ...init,
+  })
+}
+
+function clientWith(fetchImpl: MockFetch, overrides: Partial<ResolvedGrafanaConfig> = {}) {
+  return new GrafanaClient({ ...BASE_CONFIG, ...overrides }, fetchImpl)
+}
+
+async function captureError(promise: Promise<unknown>): Promise<GrafanaApiError> {
+  try {
+    await promise
+    throw new Error('expected the call to reject')
+  } catch (error) {
+    return error as GrafanaApiError
+  }
+}
+
+afterEach(() => {
+  vi.useRealTimers()
+})
+
+describe('health', () => {
+  it('calls /api/health under the configured sub-path with a bearer token', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ database: 'ok', version: '11.3.0', commit: 'abc' }),
+    )
+    const result = await clientWith(fetchImpl).health()
+
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [URL, RequestInit]
+    expect(url.toString()).toBe('https://grafana.example.com/grafana/api/health')
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer glsa_secret')
+    expect(result).toEqual({ data: { database: 'ok', version: '11.3.0' }, meta: {} })
+  })
+
+  it('maps HTTP failures to stable codes without leaking the token', async () => {
+    const fetchImpl = vi.fn(async () => new Response('nope', { status: 401 }))
+    const error = await captureError(clientWith(fetchImpl).health())
+
+    expect(error.code).toBe('AUTHENTICATION_FAILED')
+    expect(JSON.stringify(error)).not.toContain('glsa_secret')
+    expect(error.message).not.toContain('glsa_secret')
+  })
+
+  it.each([
+    ['text/html', '<html>login</html>'],
+    ['application/json', '{oops'],
+  ])('rejects unusable %s responses', async (contentType, body) => {
+    const fetchImpl = vi.fn(
+      async () => new Response(body, { headers: { 'content-type': contentType } }),
+    )
+    expect((await captureError(clientWith(fetchImpl).health())).code).toBe('INVALID_RESPONSE')
+  })
+
+  it.each([['"ok"'], ['42'], ['null'], ['true']])(
+    'rejects scalar JSON top level %s',
+    async (body) => {
+      const fetchImpl = vi.fn(
+        async () => new Response(body, { headers: { 'content-type': 'application/json' } }),
+      )
+      expect((await captureError(clientWith(fetchImpl).health())).code).toBe('INVALID_RESPONSE')
+    },
+  )
+
+  it('rejects an array where an object is expected', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse([{ database: 'ok' }]))
+    expect((await captureError(clientWith(fetchImpl).health())).code).toBe('INVALID_RESPONSE')
+  })
+
+  it('reports a timeout instead of a network error', async () => {
+    vi.useFakeTimers()
+    const fetchImpl = vi.fn(
+      (_input: unknown, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          )
+        }),
+    )
+    const promise = captureError(clientWith(fetchImpl).health())
+    await vi.advanceTimersByTimeAsync(1_001)
+    expect((await promise).code).toBe('REQUEST_TIMEOUT')
+  })
+
+  it('reports caller cancellation as REQUEST_ABORTED', async () => {
+    const controller = new AbortController()
+    const fetchImpl = vi.fn(
+      (_input: unknown, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          )
+        }),
+    )
+    const promise = captureError(clientWith(fetchImpl).health(controller.signal))
+    controller.abort()
+    expect((await promise).code).toBe('REQUEST_ABORTED')
+  })
+
+  it('reports unreachable hosts as NETWORK_ERROR', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError('fetch failed')
+    })
+    expect((await captureError(clientWith(fetchImpl).health())).code).toBe('NETWORK_ERROR')
+  })
+
+  it('rejects bodies larger than maxResponseBytes via Content-Length', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response('{}', {
+          headers: { 'content-type': 'application/json', 'content-length': '20000' },
+        }),
+    )
+    expect((await captureError(clientWith(fetchImpl).health())).code).toBe('RESPONSE_TOO_LARGE')
+  })
+
+  it('cancels a streaming body that exceeds maxResponseBytes', async () => {
+    const cancel = vi.fn()
+    const chunk = new TextEncoder().encode('x'.repeat(600))
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(chunk)
+      },
+      cancel,
+    })
+    const fetchImpl = vi.fn(
+      async () => new Response(stream, { headers: { 'content-type': 'application/json' } }),
+    )
+    const error = await captureError(clientWith(fetchImpl, { maxResponseBytes: 1_000 }).health())
+
+    expect(error.code).toBe('RESPONSE_TOO_LARGE')
+    expect(cancel).toHaveBeenCalled()
+  })
+
+  it('creates a client from environment variables', () => {
+    const client = createGrafanaClient(
+      {},
+      { GRAFANA_URL: 'https://g.example.com', GRAFANA_TOKEN: 't' },
+      vi.fn(),
+    )
+    expect(client).toBeInstanceOf(GrafanaClient)
+  })
+})
