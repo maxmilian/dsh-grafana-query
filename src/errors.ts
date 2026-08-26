@@ -62,7 +62,9 @@ export class GrafanaApiError extends Error {
 
 /** Creates a configuration error with a stable prefix. */
 export function configError(message: string): GrafanaApiError {
-  return new GrafanaApiError(`Invalid Grafana configuration: ${message}`, { code: 'INVALID_CONFIG' })
+  return new GrafanaApiError(`Invalid Grafana configuration: ${message}`, {
+    code: 'INVALID_CONFIG',
+  })
 }
 
 /** Creates an input validation error with a stable prefix. */
