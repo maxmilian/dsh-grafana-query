@@ -1,0 +1,94 @@
+import { describe, expect, it } from 'vitest'
+
+import {
+  createHttpError,
+  createUpstreamError,
+  MAX_UPSTREAM_ERROR_CHARS,
+  safeHeader,
+} from '../src/errors.js'
+
+const TOKEN = 'glsa_supersecret'
+const BAD_DATA = { status: 'error', errorType: 'bad_data', error: 'parse error at char 5' }
+
+describe('createHttpError', () => {
+  it.each([
+    [401, 'AUTHENTICATION_FAILED'],
+    [403, 'PERMISSION_DENIED'],
+    [404, 'NOT_FOUND'],
+    [405, 'NOT_FOUND'],
+    [429, 'RATE_LIMITED'],
+    [500, 'SERVER_ERROR'],
+    [503, 'SERVER_ERROR'],
+    [418, 'GRAFANA_HTTP_ERROR'],
+  ])('maps HTTP %s to %s', (status, code) => {
+    expect(createHttpError(status).code).toBe(code)
+  })
+
+  it('carries Retry-After for rate limits', () => {
+    expect(createHttpError(429, '30').retryAfter).toBe('30')
+  })
+})
+
+describe('createUpstreamError', () => {
+  it('exposes the upstream error only for HTTP 400', () => {
+    expect(createUpstreamError(400, BAD_DATA, TOKEN).upstreamMessage).toBe('parse error at char 5')
+    expect(createUpstreamError(422, BAD_DATA, TOKEN).upstreamMessage).toBeUndefined()
+    expect(createUpstreamError(200, BAD_DATA, TOKEN).upstreamMessage).toBeUndefined()
+  })
+
+  it('always carries a whitelisted errorType and drops unknown ones', () => {
+    expect(createUpstreamError(422, BAD_DATA, TOKEN).errorType).toBe('bad_data')
+    expect(
+      createUpstreamError(400, { ...BAD_DATA, errorType: 'weird' }, TOKEN).errorType,
+    ).toBeUndefined()
+  })
+
+  it('ignores non-string and non-object bodies', () => {
+    expect(createUpstreamError(400, 'plain text', TOKEN).upstreamMessage).toBeUndefined()
+    expect(
+      createUpstreamError(400, { ...BAD_DATA, error: { a: 1 } }, TOKEN).upstreamMessage,
+    ).toBeUndefined()
+  })
+
+  it('truncates the upstream error at the character cap', () => {
+    const error = 'x'.repeat(300)
+    const result = createUpstreamError(400, { ...BAD_DATA, error }, TOKEN)
+    expect(result.upstreamMessage).toHaveLength(MAX_UPSTREAM_ERROR_CHARS)
+    expect(result.upstreamMessage?.endsWith('…')).toBe(true)
+  })
+
+  it('drops the message entirely when it contains the configured token', () => {
+    const result = createUpstreamError(400, { ...BAD_DATA, error: `bad header ${TOKEN}` }, TOKEN)
+    expect(result.upstreamMessage).toBeUndefined()
+  })
+
+  it.each([
+    'leaked glsa_abcdefghij in query',
+    'leaked glc_abcdefghij in query',
+    'leaked eyJhbGciOiJIUzI1NiJ9 in query',
+    'Authorization: Bearer abcdefghij failed',
+  ])('redacts secret-looking fragments: %s', (error) => {
+    const result = createUpstreamError(400, { ...BAD_DATA, error }, TOKEN)
+    expect(result.upstreamMessage).toContain('[redacted]')
+    expect(result.upstreamMessage).not.toMatch(/glsa_|glc_|eyJ/)
+  })
+
+  it('drops the message when redaction leaves too little signal', () => {
+    const result = createUpstreamError(400, { ...BAD_DATA, error: 'glsa_abcdefghij' }, TOKEN)
+    expect(result.upstreamMessage).toBeUndefined()
+  })
+
+  it('never serializes the token', () => {
+    const result = createUpstreamError(400, { ...BAD_DATA, error: `x ${TOKEN} y` }, TOKEN)
+    expect(JSON.stringify(result)).not.toContain(TOKEN)
+  })
+})
+
+describe('safeHeader', () => {
+  it('rejects headers that echo the token or exceed the length cap', () => {
+    const headers = new Headers({ 'x-a': TOKEN, 'x-b': 'y'.repeat(200), 'x-c': '30' })
+    expect(safeHeader(headers, 'x-a', TOKEN)).toBeUndefined()
+    expect(safeHeader(headers, 'x-b', TOKEN)).toBeUndefined()
+    expect(safeHeader(headers, 'x-c', TOKEN)).toBe('30')
+  })
+})
