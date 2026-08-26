@@ -20,6 +20,7 @@ import type {
   JsonArray,
   JsonObject,
   JsonValue,
+  ListAlertRulesParams,
   ListDatasourcesParams,
   QueryParams,
   QueryRangeParams,
@@ -153,6 +154,28 @@ export class GrafanaClient {
       counts,
     }
     if (meta.truncated) meta.hint = ALERT_HINT
+    return { data: { rules: capped.slice(start, start + pageSize) }, meta }
+  }
+
+  /** Lists provisioned Grafana alert rule definitions. */
+  async listAlertRules(params: ListAlertRulesParams, signal?: AbortSignal): Promise<ApiResult> {
+    const page = assertPage(params.page)
+    const pageSize = assertPageSize(params.pageSize)
+    const raw = expectArray(await this.#getAlerting('api/v1/provisioning/alert-rules', signal))
+    const rules = raw
+      .filter(isJsonObject)
+      .map((rule) => toPublicAlertRule(rule, params.includeQuery === true))
+    const matched = rules.filter((rule) => matchesProvisionedRule(rule, params))
+    const capped = matched.slice(0, MAX_ALERT_RULES)
+    const start = (page - 1) * pageSize
+
+    const meta: JsonObject = {
+      total: matched.length,
+      page,
+      pageSize,
+      truncated: matched.length > capped.length,
+    }
+    if (meta.truncated) meta.hint = PROVISIONED_HINT
     return { data: { rules: capped.slice(start, start + pageSize) }, meta }
   }
 
@@ -822,6 +845,53 @@ function matchesAlertRule(
     return false
   }
   if (params.ruleContains && !name.toLowerCase().includes(params.ruleContains.toLowerCase())) {
+    return false
+  }
+  return true
+}
+
+const MAX_EXPR_CHARS = 1_000
+const PROVISIONED_HINT = 'Narrow the result with folder_uid, rule_group, or title_contains.'
+
+function summarizeQueryNode(node: JsonObject): JsonObject {
+  const model = isJsonObject(node.model) ? node.model : {}
+  const summary: JsonObject = {
+    refId: readString(node.refId) ?? '',
+    datasourceUid: readString(node.datasourceUid) ?? '',
+  }
+  const expr = readString(model.expr)
+  if (expr) summary.expr = expr.slice(0, MAX_EXPR_CHARS)
+  const type = readString(model.type)
+  if (!expr && type) summary.type = type
+  return summary
+}
+
+function toPublicAlertRule(rule: JsonObject, includeQuery: boolean): JsonObject {
+  const result: JsonObject = {
+    uid: readString(rule.uid) ?? '',
+    title: readString(rule.title) ?? '',
+    folderUID: readString(rule.folderUID) ?? '',
+    ruleGroup: readString(rule.ruleGroup) ?? '',
+    condition: readString(rule.condition) ?? '',
+    for: rule.for ?? null,
+    isPaused: rule.isPaused === true,
+    noDataState: readString(rule.noDataState) ?? '',
+    execErrState: readString(rule.execErrState) ?? '',
+    labels: rule.labels ?? {},
+    annotations: trimAnnotations(rule.annotations),
+  }
+  if (includeQuery) {
+    const nodes = Array.isArray(rule.data) ? rule.data.filter(isJsonObject) : []
+    result.data = nodes.map(summarizeQueryNode)
+  }
+  return result
+}
+
+function matchesProvisionedRule(rule: JsonObject, params: ListAlertRulesParams): boolean {
+  if (params.folderUid && readString(rule.folderUID) !== params.folderUid) return false
+  if (params.ruleGroup && readString(rule.ruleGroup) !== params.ruleGroup) return false
+  const title = readString(rule.title) ?? ''
+  if (params.titleContains && !title.toLowerCase().includes(params.titleContains.toLowerCase())) {
     return false
   }
   return true
