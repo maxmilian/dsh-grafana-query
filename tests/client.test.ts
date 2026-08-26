@@ -312,3 +312,227 @@ describe('chooseStepSeconds', () => {
     expect(chooseStepSeconds(31 * 86_400, 2)).toBe(Math.ceil((31 * 86_400) / 2))
   })
 })
+
+const PROM_META = { uid: 'prom-1', name: 'P', type: 'prometheus', access: 'proxy' }
+const VECTOR_OK = { status: 'success', data: { resultType: 'vector', result: [] } }
+
+function routed(routes: Record<string, () => Response>) {
+  return vi.fn(async (input: string | URL | Request) => {
+    const path = new URL(String(input)).pathname
+    const handler = Object.entries(routes).find(([suffix]) => path.endsWith(suffix))?.[1]
+    if (!handler) throw new Error(`unexpected request to ${path}`)
+    return handler()
+  })
+}
+
+describe('data source pre-flight checks', () => {
+  it('rejects non-Prometheus data sources without issuing the query', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/loki-1': () => jsonResponse({ type: 'loki', access: 'proxy' }),
+    })
+    const error = await captureError(
+      clientWith(fetchImpl).query({ datasourceUid: 'loki-1', query: 'up' }),
+    )
+
+    expect(error.code).toBe('DATASOURCE_TYPE_UNSUPPORTED')
+    expect(error.message).toContain('loki')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects direct-access data sources without issuing the query', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/d-1': () => jsonResponse({ type: 'prometheus', access: 'direct' }),
+    })
+    expect(
+      (await captureError(clientWith(fetchImpl).query({ datasourceUid: 'd-1', query: 'up' }))).code,
+    ).toBe('DATASOURCE_NOT_PROXYABLE')
+  })
+
+  it.each([
+    [401, 'AUTHENTICATION_FAILED'],
+    [404, 'NOT_FOUND'],
+  ])('propagates metadata HTTP %s as %s', async (status, code) => {
+    const fetchImpl = routed({ '/api/datasources/uid/x': () => new Response('', { status }) })
+    expect(
+      (await captureError(clientWith(fetchImpl).query({ datasourceUid: 'x', query: 'up' }))).code,
+    ).toBe(code)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('degrades gracefully when metadata is forbidden and still runs the query', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => new Response('', { status: 403 }),
+      '/api/v1/query': () => jsonResponse(VECTOR_OK),
+    })
+    await expect(
+      clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up' }),
+    ).resolves.toBeDefined()
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not cache a degraded lookup', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => new Response('', { status: 403 }),
+      '/api/v1/query': () => jsonResponse(VECTOR_OK),
+    })
+    const client = clientWith(fetchImpl)
+    await client.query({ datasourceUid: 'prom-1', query: 'up' })
+    await client.query({ datasourceUid: 'prom-1', query: 'up' })
+    expect(fetchImpl).toHaveBeenCalledTimes(4)
+  })
+
+  it('caches successful metadata for the lifetime of the client', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query': () => jsonResponse(VECTOR_OK),
+    })
+    const client = clientWith(fetchImpl)
+    await client.query({ datasourceUid: 'prom-1', query: 'up' })
+    await client.query({ datasourceUid: 'prom-1', query: 'up' })
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+  })
+
+  it('maps a proxy 404 to a type error when metadata succeeded', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query': () => new Response('', { status: 404 }),
+    })
+    expect(
+      (await captureError(clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up' })))
+        .code,
+    ).toBe('DATASOURCE_TYPE_UNSUPPORTED')
+  })
+
+  it('maps a proxy 404 to NOT_FOUND when metadata was unavailable', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => new Response('', { status: 403 }),
+      '/api/v1/query': () => new Response('', { status: 404 }),
+    })
+    const error = await captureError(
+      clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up' }),
+    )
+
+    expect(error.code).toBe('NOT_FOUND')
+    expect(error.message).toMatch(/uid/i)
+    expect(error.message).toMatch(/Prometheus/i)
+  })
+
+  it.each([['bad uid!'], [''], ['x'.repeat(101)]])('rejects malformed uid %s', async (uid) => {
+    const fetchImpl = vi.fn()
+    expect(
+      (await captureError(clientWith(fetchImpl).query({ datasourceUid: uid, query: 'up' }))).code,
+    ).toBe('INVALID_INPUT')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
+
+function vector(count: number) {
+  return {
+    status: 'success',
+    data: {
+      resultType: 'vector',
+      result: Array.from({ length: count }, (_, index) => ({
+        metric: { __name__: 'up', instance: `host-${index}` },
+        value: [1_700_000_000, '1'],
+      })),
+    },
+  }
+}
+
+describe('query', () => {
+  it('builds the uid proxy URL and forwards the PromQL expression', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query': () => jsonResponse(vector(1)),
+    })
+    await clientWith(fetchImpl).query({
+      datasourceUid: 'prom-1',
+      query: 'up',
+      time: '1700000000',
+    })
+
+    const url = new URL(String(fetchImpl.mock.calls[1]?.[0]))
+    expect(url.pathname).toBe('/grafana/api/datasources/proxy/uid/prom-1/api/v1/query')
+    expect(url.searchParams.get('query')).toBe('up')
+    expect(url.searchParams.get('time')).toBe('1700000000')
+  })
+
+  it('truncates series beyond maxSeries and records the total', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query': () => jsonResponse(vector(150)),
+    })
+    const result = await clientWith(fetchImpl, { maxResponseBytes: 1_000_000 }).query({
+      datasourceUid: 'prom-1',
+      query: 'up',
+    })
+
+    expect((result.data as { result: unknown[] }).result).toHaveLength(100)
+    expect(result.meta).toMatchObject({ seriesReturned: 100, seriesTotal: 150, truncated: true })
+    expect(result.meta.hint).toBeTypeOf('string')
+  })
+
+  it('honours a lowered maxSeries from configuration', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query': () => jsonResponse(vector(150)),
+    })
+    const result = await clientWith(fetchImpl, {
+      maxSeries: 5,
+      maxResponseBytes: 1_000_000,
+    }).query({
+      datasourceUid: 'prom-1',
+      query: 'up',
+    })
+    expect((result.data as { result: unknown[] }).result).toHaveLength(5)
+  })
+
+  it('exposes the upstream error for HTTP 400 only', async () => {
+    const body = { status: 'error', errorType: 'bad_data', error: 'parse error at char 3' }
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query': () => jsonResponse(body, { status: 400 }),
+    })
+    const error = await captureError(
+      clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up(' }),
+    )
+
+    expect(error.code).toBe('UPSTREAM_QUERY_FAILED')
+    expect(error.upstreamMessage).toBe('parse error at char 3')
+  })
+
+  it.each([[422], [200]])('hides the upstream error text for HTTP %s', async (status) => {
+    const body = { status: 'error', errorType: 'execution', error: 'too many samples' }
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query': () => jsonResponse(body, { status }),
+    })
+    const error = await captureError(
+      clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up' }),
+    )
+
+    expect(error.code).toBe('UPSTREAM_QUERY_FAILED')
+    expect(error.errorType).toBe('execution')
+    expect(error.upstreamMessage).toBeUndefined()
+  })
+
+  it('collects Prometheus warnings into meta', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query': () => jsonResponse({ ...vector(1), warnings: ['partial data'] }),
+    })
+    const result = await clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up' })
+    expect(result.meta.warnings).toEqual(['partial data'])
+  })
+
+  it.each([
+    [{ query: '' }],
+    [{ query: 'x'.repeat(4_001) }],
+    [{ timeout: '2h' }],
+    [{ timeout: '1h30m' }],
+  ])('rejects invalid arguments %o', async (overrides) => {
+    const fetchImpl = vi.fn()
+    const params = { datasourceUid: 'prom-1', query: 'up', ...overrides }
+    expect((await captureError(clientWith(fetchImpl).query(params))).code).toBe('INVALID_INPUT')
+  })
+})

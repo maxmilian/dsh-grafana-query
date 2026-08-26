@@ -5,7 +5,14 @@ import {
   resolveConfig,
   validateResolvedConfig,
 } from './config.js'
-import { createHttpError, GrafanaApiError, inputError, safeHeader } from './errors.js'
+import type { GrafanaErrorCode } from './errors.js'
+import {
+  createHttpError,
+  createUpstreamError,
+  GrafanaApiError,
+  inputError,
+  safeHeader,
+} from './errors.js'
 import type {
   ApiResult,
   DatasourceMeta,
@@ -13,6 +20,7 @@ import type {
   JsonObject,
   JsonValue,
   ListDatasourcesParams,
+  QueryParams,
 } from './types.js'
 
 export { resolveConfig }
@@ -68,6 +76,70 @@ export class GrafanaClient {
     }
   }
 
+  /** Runs an instant PromQL query through the Grafana data source proxy. */
+  async query(params: QueryParams, signal?: AbortSignal): Promise<ApiResult> {
+    const search = new URLSearchParams({ query: assertQuery(params.query) })
+    if (params.time !== undefined) {
+      assertText('time', params.time, 64)
+      search.set('time', params.time)
+    }
+    if (params.timeout !== undefined) {
+      assertTimeout(params.timeout, this.#config.requestTimeoutMs)
+      search.set('timeout', params.timeout)
+    }
+    const body = await this.#proxyGet(params.datasourceUid, 'api/v1/query', search, signal)
+    return this.#readPromResult(body, 200)
+  }
+
+  #readPromResult(body: JsonValue, status: number): ApiResult {
+    const payload = expectObject(body)
+    if (payload.status === 'error') throw createUpstreamError(status, payload, this.#config.token)
+    const data = expectObject(payload.data ?? {})
+    const series = Array.isArray(data.result) ? data.result : []
+    const kept = series.slice(0, this.#config.maxSeries)
+    const meta: JsonObject = {
+      seriesReturned: kept.length,
+      seriesTotal: series.length,
+      truncated: series.length > kept.length,
+    }
+    const warnings = readWarnings(payload.warnings)
+    if (warnings) meta.warnings = warnings
+    if (meta.truncated) meta.hint = SERIES_HINT
+    return { data: { resultType: data.resultType ?? null, result: kept }, meta }
+  }
+
+  async #datasourceMeta(uid: string, signal?: AbortSignal): Promise<DatasourceMeta | undefined> {
+    const cached = this.#datasourceCache.get(uid)
+    if (cached) return cached
+    try {
+      const body = expectObject(
+        await this.#get(`api/datasources/uid/${uid}`, new URLSearchParams(), signal),
+      )
+      const meta = { type: readString(body.type) ?? '', access: readString(body.access) ?? '' }
+      this.#datasourceCache.set(uid, meta)
+      return meta
+    } catch (error: unknown) {
+      if (error instanceof GrafanaApiError && FATAL_META_CODES.has(error.code)) throw error
+      return undefined
+    }
+  }
+
+  async #proxyGet(
+    uid: string,
+    path: string,
+    query: URLSearchParams,
+    signal?: AbortSignal,
+  ): Promise<JsonValue> {
+    assertUid(uid)
+    const meta = await this.#datasourceMeta(uid, signal)
+    if (meta) assertProxyable(uid, meta)
+    try {
+      return await this.#get(`api/datasources/proxy/uid/${uid}/${path}`, query, signal)
+    } catch (error: unknown) {
+      throw translateProxyError(error, uid, meta)
+    }
+  }
+
   async #get(endpoint: string, query: URLSearchParams, signal?: AbortSignal): Promise<JsonValue> {
     const url = new URL(endpoint, this.#config.baseUrl)
     url.search = query.toString()
@@ -88,7 +160,8 @@ export class GrafanaClient {
 
   async #readResponse(response: Response): Promise<JsonValue> {
     if (!response.ok) {
-      await response.body?.cancel()
+      const upstream = await readUpstreamBody(response, this.#config.maxResponseBytes)
+      if (upstream) throw createUpstreamError(response.status, upstream, this.#config.token)
       throw createHttpError(
         response.status,
         safeHeader(response.headers, 'Retry-After', this.#config.token),
@@ -349,4 +422,93 @@ export function parseStepSeconds(value: string): number {
 export function chooseStepSeconds(rangeSeconds: number, maxPoints: number): number {
   const required = Math.ceil(rangeSeconds / maxPoints)
   return STEP_LADDER_SECONDS.find((candidate) => candidate >= required) ?? required
+}
+
+const UID_PATTERN = /^[A-Za-z0-9_-]{1,100}$/
+const FATAL_META_CODES = new Set<GrafanaErrorCode>(['AUTHENTICATION_FAILED', 'NOT_FOUND'])
+
+function assertUid(uid: string): void {
+  if (!UID_PATTERN.test(uid)) {
+    throw inputError('datasourceUid must be 1-100 letters, digits, underscores, or hyphens.')
+  }
+}
+
+function assertProxyable(uid: string, meta: DatasourceMeta): void {
+  if (meta.type.toLowerCase() !== 'prometheus') {
+    throw new GrafanaApiError(
+      `Data source ${uid} has type "${meta.type}"; this plugin only supports Prometheus-compatible data sources.`,
+      { code: 'DATASOURCE_TYPE_UNSUPPORTED' },
+    )
+  }
+  if (meta.access === 'direct') {
+    throw new GrafanaApiError(
+      `Data source ${uid} uses browser (direct) access and cannot be proxied by Grafana.`,
+      { code: 'DATASOURCE_NOT_PROXYABLE' },
+    )
+  }
+}
+
+function translateProxyError(
+  error: unknown,
+  uid: string,
+  meta: DatasourceMeta | undefined,
+): unknown {
+  if (!(error instanceof GrafanaApiError) || error.code !== 'NOT_FOUND') return error
+  if (meta) {
+    return new GrafanaApiError(
+      `Data source ${uid} did not answer the Prometheus query API; it is probably not Prometheus-compatible.`,
+      { code: 'DATASOURCE_TYPE_UNSUPPORTED', status: error.status },
+    )
+  }
+  return new GrafanaApiError(
+    `Data source ${uid} was not found, or it is not a Prometheus-compatible data source. Run grafana_list_datasources to confirm the uid and type.`,
+    { code: 'NOT_FOUND', status: error.status },
+  )
+}
+
+const MAX_QUERY_LENGTH = 4_000
+const MAX_WARNINGS = 5
+const MAX_WARNING_CHARS = 200
+const SERIES_HINT =
+  'Narrow the result with label filters or an aggregation such as topk() or sum by ().'
+
+function assertQuery(value: string): string {
+  assertText('query', value, MAX_QUERY_LENGTH)
+  return value
+}
+
+function assertTimeout(value: string, requestTimeoutMs: number): void {
+  const parsed = parseDurationMs('timeout', value)
+  if (parsed < 1 || parsed > requestTimeoutMs) {
+    throw inputError(
+      `timeout must be between 1 ms and the configured requestTimeoutMs (${requestTimeoutMs} ms).`,
+    )
+  }
+}
+
+function readWarnings(value: JsonValue | undefined): JsonValue[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined
+  return value
+    .filter((entry): entry is string => typeof entry === 'string')
+    .slice(0, MAX_WARNINGS)
+    .map((entry) => entry.slice(0, MAX_WARNING_CHARS))
+}
+
+async function readUpstreamBody(
+  response: Response,
+  maximum: number,
+): Promise<JsonObject | undefined> {
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+  if (!isJsonContentType(contentType)) {
+    await response.body?.cancel()
+    return undefined
+  }
+  try {
+    const parsed = JSON.parse(await readBoundedBody(response, maximum)) as unknown
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+    const body = parsed as JsonObject
+    return body.status === 'error' ? body : undefined
+  } catch {
+    return undefined
+  }
 }
