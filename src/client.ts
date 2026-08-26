@@ -21,6 +21,7 @@ import type {
   JsonValue,
   ListDatasourcesParams,
   QueryParams,
+  QueryRangeParams,
 } from './types.js'
 
 export { resolveConfig }
@@ -89,6 +90,24 @@ export class GrafanaClient {
     }
     const body = await this.#proxyGet(params.datasourceUid, 'api/v1/query', search, signal)
     return this.#readPromResult(body, 200)
+  }
+
+  /** Runs a range PromQL query with an enforced point budget. */
+  async queryRange(params: QueryRangeParams, signal?: AbortSignal): Promise<ApiResult> {
+    const maxPoints = assertMaxPoints(params.maxPoints)
+    const startSeconds = assertInstant('start', params.start)
+    const endSeconds = assertInstant('end', params.end)
+    const rangeSeconds = assertRange(startSeconds, endSeconds)
+    const step = resolveStep(params.step, rangeSeconds, maxPoints)
+
+    const search = new URLSearchParams({
+      query: assertQuery(params.query),
+      start: params.start,
+      end: params.end,
+      step: String(step.seconds),
+    })
+    const body = await this.#proxyGet(params.datasourceUid, 'api/v1/query_range', search, signal)
+    return finalizeRange(this.#readPromResult(body, 200), step, maxPoints)
   }
 
   #readPromResult(body: JsonValue, status: number): ApiResult {
@@ -511,4 +530,81 @@ async function readUpstreamBody(
   } catch {
     return undefined
   }
+}
+
+const MAX_POINTS_PER_SERIES = 500
+const DEFAULT_MAX_POINTS = 200
+const MAX_TOTAL_POINTS = 20_000
+const MAX_RANGE_SECONDS = 31 * 86_400
+
+interface ResolvedStep {
+  readonly seconds: number
+  readonly auto: boolean
+}
+
+function assertMaxPoints(value = DEFAULT_MAX_POINTS): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_POINTS_PER_SERIES) {
+    throw inputError(`maxPoints must be an integer between 1 and ${MAX_POINTS_PER_SERIES}.`)
+  }
+  return value
+}
+
+function assertInstant(name: string, value: string): number {
+  const numeric = Number(value)
+  const seconds = value.trim() && Number.isFinite(numeric) ? numeric : Date.parse(value) / 1_000
+  if (!Number.isFinite(seconds)) {
+    throw inputError(`${name} must be an RFC3339 timestamp or a Unix timestamp in seconds.`)
+  }
+  return seconds
+}
+
+function assertRange(startSeconds: number, endSeconds: number): number {
+  const rangeSeconds = Math.ceil(endSeconds - startSeconds)
+  if (rangeSeconds < 1) throw inputError('end must be later than start by at least one second.')
+  if (rangeSeconds > MAX_RANGE_SECONDS) {
+    throw inputError(`the range must not exceed ${MAX_RANGE_SECONDS} seconds (31 days).`)
+  }
+  return rangeSeconds
+}
+
+function resolveStep(
+  step: string | undefined,
+  rangeSeconds: number,
+  maxPoints: number,
+): ResolvedStep {
+  if (step === undefined) return { seconds: chooseStepSeconds(rangeSeconds, maxPoints), auto: true }
+  const seconds = parseStepSeconds(step)
+  const points = Math.ceil(rangeSeconds / seconds)
+  if (points > maxPoints) {
+    const required = Math.ceil(rangeSeconds / maxPoints)
+    throw new GrafanaApiError(
+      `This range would return about ${points} points per series, above the limit of ${maxPoints}. Raise step to at least ${required} seconds, or shorten the range to ${maxPoints * seconds} seconds or less.`,
+      { code: 'QUERY_RANGE_TOO_LARGE' },
+    )
+  }
+  return { seconds, auto: false }
+}
+
+function finalizeRange(result: ApiResult, step: ResolvedStep, maxPoints: number): ApiResult {
+  const data = result.data as { resultType: JsonValue; result: JsonValue[] }
+  const kept: JsonValue[] = []
+  let totalPoints = 0
+  for (const entry of data.result) {
+    const points = isJsonObject(entry) && Array.isArray(entry.values) ? entry.values.length : 0
+    if (totalPoints + points > MAX_TOTAL_POINTS) break
+    totalPoints += points
+    kept.push(entry)
+  }
+  const truncated = result.meta.truncated === true || kept.length < data.result.length
+  const meta: JsonObject = {
+    ...result.meta,
+    stepApplied: step.seconds,
+    stepAuto: step.auto,
+    maxPoints,
+    seriesReturned: kept.length,
+    totalPoints,
+    truncated,
+  }
+  if (truncated) meta.hint = SERIES_HINT
+  return { data: { resultType: data.resultType, result: kept }, meta }
 }
