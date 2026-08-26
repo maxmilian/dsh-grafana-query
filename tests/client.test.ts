@@ -627,3 +627,135 @@ describe('queryRange', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 })
+
+const RULES_BODY = {
+  status: 'success',
+  data: {
+    groups: [
+      {
+        name: 'cpu',
+        file: 'Infra',
+        rules: [
+          {
+            name: 'HighCPU',
+            state: 'firing',
+            health: 'ok',
+            labels: { severity: 'critical' },
+            annotations: {
+              summary: 'CPU is high',
+              description: 'd',
+              runbook_url: 'r',
+              internal: 'x',
+            },
+            lastEvaluation: '2026-08-26T00:00:00Z',
+            evaluationTime: 0.01,
+            duration: 300,
+            alerts: Array.from({ length: 25 }, (_, i) => ({
+              labels: { instance: `h-${i}` },
+              state: 'Alerting',
+              activeAt: '2026-08-26T00:00:00Z',
+              value: 'v'.repeat(400),
+            })),
+          },
+          { name: 'LowDisk', state: 'Normal', health: 'ok', alerts: [] },
+          { name: 'Weird', state: 'Whatever', health: 'ok', alerts: [] },
+        ],
+      },
+    ],
+  },
+}
+
+describe('alertState', () => {
+  it('flattens groups, normalizes states, and keeps unknown states visible by default', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(RULES_BODY))
+    const result = await clientWith(fetchImpl, { maxResponseBytes: 1_000_000 }).alertState({})
+    const rules = (result.data as { rules: Record<string, unknown>[] }).rules
+
+    expect(rules.map((rule) => rule.name)).toEqual(['HighCPU', 'Weird'])
+    expect(rules[0]).toMatchObject({ group: 'cpu', folder: 'Infra', state: 'firing' })
+    expect(rules[1]).toMatchObject({ state: 'unknown', stateRaw: 'Whatever' })
+    expect(result.meta).toMatchObject({
+      stateVocabulary: 'grafana-normalized',
+      counts: { firing: 1, pending: 0, inactive: 1, unknown: 1 },
+    })
+  })
+
+  it('trims annotations to the three useful keys', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(RULES_BODY))
+    const result = await clientWith(fetchImpl, { maxResponseBytes: 1_000_000 }).alertState({})
+    const rule = (result.data as { rules: { annotations: Record<string, string> }[] }).rules[0]
+
+    expect(Object.keys(rule?.annotations ?? {}).sort()).toEqual([
+      'description',
+      'runbook_url',
+      'summary',
+    ])
+  })
+
+  it('caps instances per rule and truncates instance values', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(RULES_BODY))
+    const result = await clientWith(fetchImpl, { maxResponseBytes: 1_000_000 }).alertState({})
+    const rule = (result.data as { rules: Record<string, unknown>[] }).rules[0]
+    const instances = rule?.activeInstances as { value: string; state: string }[]
+
+    expect(instances).toHaveLength(10)
+    expect(instances[0]?.value).toHaveLength(200)
+    expect(instances[0]?.state).toBe('firing')
+    expect(rule).toMatchObject({ instancesTruncated: true, instancesTotal: 25 })
+  })
+
+  it('omits instances when include_instances is false', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(RULES_BODY))
+    const result = await clientWith(fetchImpl, { maxResponseBytes: 1_000_000 }).alertState({
+      includeInstances: false,
+    })
+    expect((result.data as { rules: Record<string, unknown>[] }).rules[0]).not.toHaveProperty(
+      'activeInstances',
+    )
+  })
+
+  it('truncates before paginating and reports the pre-truncation total', async () => {
+    const many = {
+      status: 'success',
+      data: {
+        groups: [
+          {
+            name: 'g',
+            file: 'f',
+            rules: Array.from({ length: 900 }, (_, i) => ({
+              name: `r-${i}`,
+              state: 'firing',
+              alerts: [],
+            })),
+          },
+        ],
+      },
+    }
+    const fetchImpl = vi.fn(async () => jsonResponse(many))
+    const client = clientWith(fetchImpl, { maxResponseBytes: 1_000_000 })
+
+    const first = await client.alertState({})
+    expect(first.meta).toMatchObject({ total: 900, truncated: true })
+    expect(first.meta.hint).toBeTypeOf('string')
+
+    const beyond = await client.alertState({ page: 26 })
+    expect((beyond.data as { rules: unknown[] }).rules).toEqual([])
+  })
+
+  it('maps a 404 to ALERTING_UNAVAILABLE', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 404 }))
+    expect((await captureError(clientWith(fetchImpl).alertState({}))).code).toBe(
+      'ALERTING_UNAVAILABLE',
+    )
+  })
+
+  it.each([[{ state: [] }], [{ state: ['bogus'] }], [{ maxInstancesPerRule: 51 }]])(
+    'rejects invalid arguments %o',
+    async (params) => {
+      const fetchImpl = vi.fn()
+      expect((await captureError(clientWith(fetchImpl).alertState(params))).code).toBe(
+        'INVALID_INPUT',
+      )
+    },
+  )
+})
