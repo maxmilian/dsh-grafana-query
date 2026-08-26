@@ -305,3 +305,48 @@ function assertPageSize(value = DEFAULT_PAGE_SIZE): number {
   }
   return value
 }
+
+/** Ladder of human-friendly step values, in seconds. */
+export const STEP_LADDER_SECONDS = [
+  1, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1_800, 3_600, 7_200, 21_600, 43_200, 86_400,
+] as const
+
+const DURATION_PATTERN = /^(\d+)(ms|s|m|h|d|w)?$/
+const UNIT_MS: Record<string, number> = {
+  ms: 1,
+  s: 1_000,
+  m: 60_000,
+  h: 3_600_000,
+  d: 86_400_000,
+  w: 604_800_000,
+}
+
+/** Parses a Prometheus-style duration (or a bare integer of seconds) into milliseconds. */
+export function parseDurationMs(name: string, value: string): number {
+  const match = DURATION_PATTERN.exec(value.trim())
+  if (!match?.[1]) {
+    throw inputError(
+      `${name} must be an integer number of seconds or a single value with unit ms, s, m, h, d, or w (for example 30s).`,
+    )
+  }
+  const unit = match[2] ?? 's'
+  return Number(match[1]) * (UNIT_MS[unit] as number)
+}
+
+/** Parses a step value into whole seconds, rejecting sub-second units. */
+export function parseStepSeconds(value: string): number {
+  if (value.trim().endsWith('ms')) {
+    throw inputError('step does not accept the ms unit; use whole seconds or a larger unit.')
+  }
+  const seconds = parseDurationMs('step', value) / 1_000
+  if (!Number.isSafeInteger(seconds) || seconds < 1) {
+    throw inputError('step must be a whole number of seconds and at least 1 second.')
+  }
+  return seconds
+}
+
+/** Picks the smallest ladder step that keeps a range under the point budget. */
+export function chooseStepSeconds(rangeSeconds: number, maxPoints: number): number {
+  const required = Math.ceil(rangeSeconds / maxPoints)
+  return STEP_LADDER_SECONDS.find((candidate) => candidate >= required) ?? required
+}

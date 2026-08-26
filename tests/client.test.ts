@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createGrafanaClient, GrafanaClient } from '../src/client.js'
+import {
+  chooseStepSeconds,
+  createGrafanaClient,
+  GrafanaClient,
+  parseDurationMs,
+  parseStepSeconds,
+} from '../src/client.js'
 import type { ResolvedGrafanaConfig } from '../src/config.js'
 import type { GrafanaApiError } from '../src/errors.js'
 
@@ -256,5 +262,53 @@ describe('listDatasources', () => {
     expect((await captureError(clientWith(fetchImpl).listDatasources(params))).code).toBe(
       'INVALID_INPUT',
     )
+  })
+})
+
+describe('duration parsing', () => {
+  it.each([
+    ['30', 30_000],
+    ['500ms', 500],
+    ['15s', 15_000],
+    ['5m', 300_000],
+    ['2h', 7_200_000],
+    ['1d', 86_400_000],
+    ['1w', 604_800_000],
+  ])('parses %s', (value, expected) => {
+    expect(parseDurationMs('timeout', value)).toBe(expected)
+  })
+
+  it.each(['1h30m', '1.5h', '-5s', '1y', '', 'abc', '10 s'])('rejects %s', (value) => {
+    expect(() => parseDurationMs('timeout', value)).toThrow(/timeout/)
+  })
+
+  it.each(['500ms', '1000ms'])('rejects %s as a step because ms is not allowed', (value) => {
+    expect(() => parseStepSeconds(value)).toThrow(/ms/)
+  })
+
+  it.each([
+    ['15s', 15],
+    ['5m', 300],
+    ['1h', 3_600],
+    ['60', 60],
+  ])('parses step %s into seconds', (value, expected) => {
+    expect(parseStepSeconds(value)).toBe(expected)
+  })
+})
+
+describe('chooseStepSeconds', () => {
+  it.each([
+    [60, 200, 1],
+    [1_000, 200, 5],
+    [3_600, 200, 30],
+    [86_400, 200, 600],
+    [7 * 86_400, 200, 3_600],
+    [31 * 86_400, 200, 21_600],
+  ])('picks the ladder step for range %s and %s points', (rangeSeconds, maxPoints, expected) => {
+    expect(chooseStepSeconds(rangeSeconds, maxPoints)).toBe(expected)
+  })
+
+  it('falls back to the exact required step beyond one day', () => {
+    expect(chooseStepSeconds(31 * 86_400, 2)).toBe(Math.ceil((31 * 86_400) / 2))
   })
 })
