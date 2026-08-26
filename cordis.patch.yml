@@ -1,0 +1,10 @@
+- insert:
+    - id: dsh-grafana-query
+      name: dsh-grafana-query
+      config:
+        baseUrl: ''
+        token: ''
+        locale: en
+        requestTimeoutMs: 30000
+        maxResponseBytes: 5242880
+        maxSeries: 100
