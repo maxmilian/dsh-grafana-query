@@ -18,7 +18,7 @@ const TOOL_NAMES = [
 type AnyTool = {
   name: string
   description: string
-  isConcurrencySafe?: () => boolean
+  isConcurrencySafe?: (args: Record<string, unknown>) => boolean
   output?: { render?: (args: unknown, value: unknown) => unknown }
   execute: (args: Record<string, unknown>, exec: { signal?: AbortSignal }) => Promise<unknown>
 }
@@ -49,8 +49,24 @@ describe('registerGrafanaTools', () => {
     expect(tools.map((tool) => tool.name).sort()).toEqual(TOOL_NAMES)
   })
 
+  const VALID_ARGS: Record<string, Record<string, unknown>> = {
+    grafana_health: {},
+    grafana_list_datasources: { type: 'prometheus' },
+    grafana_query: { datasource_uid: 'prom-1', query: 'up' },
+    grafana_query_range: {
+      datasource_uid: 'prom-1',
+      query: 'up',
+      start: '1700000000',
+      end: '1700003600',
+    },
+    grafana_alert_state: { state: ['firing'] },
+    grafana_list_alert_rules: { rule_group: 'cpu' },
+  }
+
   it('marks every tool as concurrency safe', () => {
-    for (const tool of collect().tools) expect(tool.isConcurrencySafe?.()).toBe(true)
+    for (const tool of collect().tools) {
+      expect(tool.isConcurrencySafe?.(VALID_ARGS[tool.name] ?? {}), tool.name).toBe(true)
+    }
   })
 
   it('renders results as a single JSON text block', () => {
