@@ -52,7 +52,6 @@ export class GrafanaApiError extends Error {
   /** Returns JSON-safe error details suitable for diagnostics. */
   toJSON(): Record<string, number | string | undefined> {
     return {
-      name: this.name,
       code: this.code,
       status: this.status,
       retryAfter: this.retryAfter,

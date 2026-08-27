@@ -116,6 +116,19 @@ describe('createUpstreamError', () => {
   })
 })
 
+describe('toJSON', () => {
+  it('exposes exactly the five documented fields', () => {
+    const error = createUpstreamError(400, BAD_DATA, TOKEN)
+    expect(Object.keys(error.toJSON())).toEqual([
+      'code',
+      'status',
+      'retryAfter',
+      'errorType',
+      'upstreamMessage',
+    ])
+  })
+})
+
 describe('safeHeader', () => {
   it('rejects headers that echo the token or exceed the length cap', () => {
     const headers = new Headers({ 'x-a': TOKEN, 'x-b': 'y'.repeat(200), 'x-c': '30' })
