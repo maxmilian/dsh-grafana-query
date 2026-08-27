@@ -11,6 +11,7 @@ import {
   createUpstreamError,
   GrafanaApiError,
   inputError,
+  permissionError,
   safeHeader,
 } from './errors.js'
 import type {
@@ -65,7 +66,7 @@ export class GrafanaClient {
     if (params.nameContains !== undefined) assertText('nameContains', params.nameContains, 200)
     if (params.type !== undefined) assertText('type', params.type, 100)
 
-    const raw = expectArray(await this.#get('api/datasources', new URLSearchParams(), signal))
+    const raw = expectArray(await this.#getGuarded('api/datasources', 'datasources:read', signal))
     const all = raw.filter(isJsonObject).map(readDatasource)
     for (const entry of all) {
       this.#datasourceCache.set(entry.uid, { type: entry.type, access: entry.access })
@@ -137,7 +138,7 @@ export class GrafanaClient {
     const maxInstances = assertInstances(params.maxInstancesPerRule)
 
     const body = expectObject(
-      await this.#getAlerting('api/prometheus/grafana/api/v1/rules', signal),
+      await this.#getAlerting('api/prometheus/grafana/api/v1/rules', 'alert.rules:read', signal),
     )
     const flattened = flattenAlertRules(body, params.includeInstances !== false, maxInstances)
     const counts = countStates(flattened.rules)
@@ -161,7 +162,9 @@ export class GrafanaClient {
   async listAlertRules(params: ListAlertRulesParams, signal?: AbortSignal): Promise<ApiResult> {
     const page = assertPage(params.page)
     const pageSize = assertPageSize(params.pageSize)
-    const raw = expectArray(await this.#getAlerting('api/v1/provisioning/alert-rules', signal))
+    const raw = expectArray(
+      await this.#getAlerting('api/v1/provisioning/alert-rules', 'alert.provisioning:read', signal),
+    )
     const rules = raw
       .filter(isJsonObject)
       .map((rule) => toPublicAlertRule(rule, params.includeQuery === true))
@@ -179,9 +182,26 @@ export class GrafanaClient {
     return { data: { rules: capped.slice(start, start + pageSize) }, meta }
   }
 
-  async #getAlerting(endpoint: string, signal?: AbortSignal): Promise<JsonValue> {
+  /** Runs a plain GET, restating a 403 with the permission the token is missing. */
+  async #getGuarded(
+    endpoint: string,
+    permission: string,
+    signal?: AbortSignal,
+  ): Promise<JsonValue> {
     try {
       return await this.#get(endpoint, new URLSearchParams(), signal)
+    } catch (error: unknown) {
+      throw permissionError(error, permission)
+    }
+  }
+
+  async #getAlerting(
+    endpoint: string,
+    permission: string,
+    signal?: AbortSignal,
+  ): Promise<JsonValue> {
+    try {
+      return await this.#getGuarded(endpoint, permission, signal)
     } catch (error: unknown) {
       throw translateAlertingError(error)
     }
@@ -560,7 +580,9 @@ function translateProxyError(
   uid: string,
   meta: DatasourceMeta | undefined,
 ): unknown {
-  if (!(error instanceof GrafanaApiError) || error.code !== 'NOT_FOUND') return error
+  if (!(error instanceof GrafanaApiError)) return error
+  if (error.code === 'PERMISSION_DENIED') return permissionError(error, 'datasources:query')
+  if (error.code !== 'NOT_FOUND') return error
   if (meta) {
     return new GrafanaApiError(
       `Data source ${uid} did not answer the Prometheus query API; it is probably not Prometheus-compatible.`,

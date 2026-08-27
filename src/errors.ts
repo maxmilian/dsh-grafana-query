@@ -122,6 +122,18 @@ function describeHttpError(status: number): { code: GrafanaErrorCode; message: s
   return { code: 'GRAFANA_HTTP_ERROR', message: `Grafana request failed (HTTP ${status}).` }
 }
 
+/**
+ * Restates a 403 with the Grafana permission the service account is missing.
+ * Anything that is not a permission failure passes through untouched.
+ */
+export function permissionError(error: unknown, permission: string): unknown {
+  if (!(error instanceof GrafanaApiError) || error.code !== 'PERMISSION_DENIED') return error
+  return new GrafanaApiError(
+    `Grafana denied access to this resource. The token needs the ${permission} permission.`,
+    { code: 'PERMISSION_DENIED', status: error.status },
+  )
+}
+
 /** Creates an error for a Prometheus `status: "error"` response body. */
 export function createUpstreamError(
   status: number,

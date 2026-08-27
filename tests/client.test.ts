@@ -1036,3 +1036,44 @@ describe('timestamp validation', () => {
     },
   )
 })
+
+describe('403 responses name the missing permission', () => {
+  const forbidden = () => new Response('', { status: 403 })
+
+  it('names datasources:read for the data source listing', async () => {
+    const fetchImpl = routed({ '/api/datasources': forbidden })
+    const error = await captureError(clientWith(fetchImpl).listDatasources({}))
+
+    expect(error.code).toBe('PERMISSION_DENIED')
+    expect(error.message).toContain('datasources:read')
+  })
+
+  it('names datasources:query when the query proxy is forbidden', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query': forbidden,
+    })
+    const error = await captureError(
+      clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up' }),
+    )
+
+    expect(error.code).toBe('PERMISSION_DENIED')
+    expect(error.message).toContain('datasources:query')
+  })
+
+  it('names alert.rules:read for alert state', async () => {
+    const fetchImpl = routed({ '/api/prometheus/grafana/api/v1/rules': forbidden })
+    const error = await captureError(clientWith(fetchImpl).alertState({}))
+
+    expect(error.code).toBe('PERMISSION_DENIED')
+    expect(error.message).toContain('alert.rules:read')
+  })
+
+  it('names alert.provisioning:read for provisioned rules', async () => {
+    const fetchImpl = routed({ '/api/v1/provisioning/alert-rules': forbidden })
+    const error = await captureError(clientWith(fetchImpl).listAlertRules({}))
+
+    expect(error.code).toBe('PERMISSION_DENIED')
+    expect(error.message).toContain('alert.provisioning:read')
+  })
+})
