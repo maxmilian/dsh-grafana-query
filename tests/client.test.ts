@@ -988,3 +988,38 @@ describe('HTTP status classification with a Prometheus-shaped error body', () =>
     expect(error.upstreamMessage).toBe(upstreamMessage)
   })
 })
+
+describe('timestamp validation', () => {
+  const BAD_INSTANTS = ['not-a-time', '2026-01-01', '1e3', '0x10', '', ' 1700000000', 'now-1h']
+
+  it.each(BAD_INSTANTS)('rejects %o as an instant query time', async (time) => {
+    const fetchImpl = vi.fn()
+    expect(
+      (await captureError(clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up', time })))
+        .code,
+    ).toBe('INVALID_INPUT')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it.each(BAD_INSTANTS)('rejects %o as a range start', async (start) => {
+    const fetchImpl = vi.fn()
+    expect((await captureError(clientWith(fetchImpl).queryRange({ ...RANGE, start }))).code).toBe(
+      'INVALID_INPUT',
+    )
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it.each(['1700000000', '1700000000.25', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00.500+08:00'])(
+    'accepts %o as an instant query time',
+    async (time) => {
+      const fetchImpl = routed({
+        '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+        '/api/v1/query': () => jsonResponse(VECTOR_OK),
+      })
+      await expect(
+        clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up', time }),
+      ).resolves.toBeDefined()
+      expect(new URL(String(fetchImpl.mock.calls[1]?.[0])).searchParams.get('time')).toBe(time)
+    },
+  )
+})

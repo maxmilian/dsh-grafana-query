@@ -83,7 +83,7 @@ export class GrafanaClient {
   async query(params: QueryParams, signal?: AbortSignal): Promise<ApiResult> {
     const search = new URLSearchParams({ query: assertQuery(params.query) })
     if (params.time !== undefined) {
-      assertText('time', params.time, 64)
+      parseInstantSeconds('time', params.time)
       search.set('time', params.time)
     }
     if (params.timeout !== undefined) {
@@ -97,8 +97,8 @@ export class GrafanaClient {
   /** Runs a range PromQL query with an enforced point budget. */
   async queryRange(params: QueryRangeParams, signal?: AbortSignal): Promise<ApiResult> {
     const maxPoints = assertMaxPoints(params.maxPoints)
-    const startSeconds = assertInstant('start', params.start)
-    const endSeconds = assertInstant('end', params.end)
+    const startSeconds = parseInstantSeconds('start', params.start)
+    const endSeconds = parseInstantSeconds('end', params.end)
     const rangeSeconds = assertRange(startSeconds, endSeconds)
     const step = resolveStep(params.step, rangeSeconds, maxPoints)
 
@@ -637,13 +637,25 @@ function assertMaxPoints(value = DEFAULT_MAX_POINTS): number {
   return value
 }
 
-function assertInstant(name: string, value: string): number {
-  const numeric = Number(value)
-  const seconds = value.trim() && Number.isFinite(numeric) ? numeric : Date.parse(value) / 1_000
-  if (!Number.isFinite(seconds)) {
-    throw inputError(`${name} must be an RFC3339 timestamp or a Unix timestamp in seconds.`)
+const UNIX_SECONDS_PATTERN = /^-?\d+(?:\.\d+)?$/
+const RFC3339_PATTERN =
+  /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$/
+
+/**
+ * Parses a timestamp into Unix seconds, accepting only the two forms the tool
+ * metadata promises: a decimal Unix timestamp in seconds, or a complete RFC3339
+ * date-time. Anything else (a bare date, `1e3`, `0x10`, relative expressions) is
+ * rejected here rather than forwarded to Grafana.
+ */
+export function parseInstantSeconds(name: string, value: string): number {
+  if (UNIX_SECONDS_PATTERN.test(value)) return Number(value)
+  if (RFC3339_PATTERN.test(value)) {
+    const milliseconds = Date.parse(value)
+    if (Number.isFinite(milliseconds)) return milliseconds / 1_000
   }
-  return seconds
+  throw inputError(
+    `${name} must be an RFC3339 date-time such as 2026-01-01T00:00:00Z, or a Unix timestamp in seconds.`,
+  )
 }
 
 function assertRange(startSeconds: number, endSeconds: number): number {
