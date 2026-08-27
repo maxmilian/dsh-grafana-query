@@ -299,7 +299,7 @@ describe('duration parsing', () => {
 describe('chooseStepSeconds', () => {
   it.each([
     [60, 200, 1],
-    [1_000, 200, 5],
+    [1_000, 200, 10],
     [3_600, 200, 30],
     [86_400, 200, 600],
     [7 * 86_400, 200, 3_600],
@@ -309,7 +309,7 @@ describe('chooseStepSeconds', () => {
   })
 
   it('falls back to the exact required step beyond one day', () => {
-    expect(chooseStepSeconds(31 * 86_400, 2)).toBe(Math.ceil((31 * 86_400) / 2))
+    expect(chooseStepSeconds(31 * 86_400, 2)).toBe(Math.ceil((31 * 86_400 + 1) / 2))
   })
 })
 
@@ -590,8 +590,9 @@ describe('queryRange', () => {
     )
 
     expect(error.code).toBe('QUERY_RANGE_TOO_LARGE')
-    expect(error.message).toContain('3600')
+    expect(error.message).toContain('3601')
     expect(error.message).toContain('10')
+    expect(error.message).toContain('361')
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
@@ -609,6 +610,61 @@ describe('queryRange', () => {
     expect(series).toHaveLength(40)
     expect(series.every((entry) => entry.values.length === 500)).toBe(true)
     expect(result.meta).toMatchObject({ truncated: true, totalPoints: 20_000, seriesTotal: 100 })
+  })
+
+  it('counts the inclusive end point when an explicit step is checked', async () => {
+    const fetchImpl = vi.fn()
+    const error = await captureError(
+      clientWith(fetchImpl).queryRange({
+        ...RANGE,
+        start: '0',
+        end: '200',
+        step: '1s',
+        maxPoints: 200,
+      }),
+    )
+
+    expect(error.code).toBe('QUERY_RANGE_TOO_LARGE')
+    expect(error.message).toContain('201')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('accepts an explicit step that lands exactly on the point budget', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query_range': () => jsonResponse(matrix(1, 200)),
+    })
+    const result = await clientWith(fetchImpl).queryRange({
+      ...RANGE,
+      start: '0',
+      end: '199',
+      step: '1s',
+      maxPoints: 200,
+    })
+
+    expect(result.meta).toMatchObject({ stepApplied: 1, maxPoints: 200, totalPoints: 200 })
+  })
+
+  it('keeps an automatic step within the inclusive point budget', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query_range': () => jsonResponse(matrix(1, 1)),
+    })
+    await clientWith(fetchImpl).queryRange({ ...RANGE, start: '0', end: '200', maxPoints: 200 })
+
+    const step = Number(new URL(String(fetchImpl.mock.calls[1]?.[0])).searchParams.get('step'))
+    expect(Math.floor(200 / step) + 1).toBeLessThanOrEqual(200)
+  })
+
+  it('asks for a single point when max_points is 1', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query_range': () => jsonResponse(matrix(1, 1)),
+    })
+    await clientWith(fetchImpl).queryRange({ ...RANGE, start: '0', end: '200', maxPoints: 1 })
+
+    const step = Number(new URL(String(fetchImpl.mock.calls[1]?.[0])).searchParams.get('step'))
+    expect(Math.floor(200 / step) + 1).toBe(1)
   })
 
   it.each([

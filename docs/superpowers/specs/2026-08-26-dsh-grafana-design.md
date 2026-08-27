@@ -247,9 +247,9 @@ metadata 本身回 404 的情況在上表已直接拋 `NOT_FOUND`，不會走到
 
 #### 3.4.2 step 與點數上限（核心規則）
 
-1. 令 `rangeSeconds = end - start`；`requiredStep = ceil(rangeSeconds / max_points)`（秒）。
+1. 令 `rangeSeconds = end - start`。Prometheus 的 range query **同時包含 start 與 end**，因此實際點數為 `points = floor(rangeSeconds / step) + 1`，而滿足 `points <= max_points` 的最小 step 為 `requiredStep = ceil((rangeSeconds + 1) / max_points)`（秒）。此式在 `max_points = 1` 時自然退化為 `rangeSeconds + 1`，不需特例。
 2. **`step` 省略** → 自動採用刻度集合 `[1s, 5s, 10s, 15s, 30s, 1m, 2m, 5m, 10m, 15m, 30m, 1h, 2h, 6h, 12h, 1d]` 中第一個 ≥ `requiredStep` 的值（若 `requiredStep` 大於 `1d`，則直接用 `requiredStep` 秒）。這就是**降採樣**：agent 拿到的點數必然 ≤ `max_points`。`meta.stepApplied` 回報實際使用的秒數、`meta.stepAuto = true`。
-3. **`step` 明確指定且 `ceil(rangeSeconds / step) > max_points`** → **直接拒絕**，丟 `QUERY_RANGE_TOO_LARGE`，訊息帶三個具體數字：預估點數、`max_points` 上限、以及「把 step 調到至少 `requiredStep` 秒，或把區間縮到 `max_points × step` 秒以內」。**不猜使用者意圖、不偷偷改參數。**
+3. **`step` 明確指定且 `floor(rangeSeconds / step) + 1 > max_points`** → **直接拒絕**，丟 `QUERY_RANGE_TOO_LARGE`，訊息帶三個具體數字：預估點數、`max_points` 上限、以及「把 step 調到至少 `requiredStep` 秒，或把區間縮到 `max_points × step - 1` 秒以內」。**不猜使用者意圖、不偷偷改參數。**
 4. 硬上限：`rangeSeconds` 必須 ≥ 1 秒且 ≤ 31 天（`MAX_RANGE_SECONDS`）。
 5. **總點數上限**：回應後檢查 `Σ(每 series 點數)`，超過 `MAX_TOTAL_POINTS`（20000）時**截斷 series**（保留前 N 個完整 series），並標記 `meta.truncated`。**任何情況都不砍單一 series 的尾巴**——半截的時序對 agent 沒有意義。
 

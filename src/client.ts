@@ -497,9 +497,22 @@ export function parseStepSeconds(value: string): number {
   return seconds
 }
 
-/** Picks the smallest ladder step that keeps a range under the point budget. */
+/**
+ * Number of points a Prometheus range query returns. Prometheus evaluates both
+ * endpoints, so a range of `rangeSeconds` at `stepSeconds` yields one extra point.
+ */
+export function countRangePoints(rangeSeconds: number, stepSeconds: number): number {
+  return Math.floor(rangeSeconds / stepSeconds) + 1
+}
+
+/** Smallest step, in seconds, that keeps an inclusive range within the point budget. */
+export function requiredStepSeconds(rangeSeconds: number, maxPoints: number): number {
+  return Math.ceil((rangeSeconds + 1) / maxPoints)
+}
+
+/** Picks the smallest ladder step that keeps a range within the point budget. */
 export function chooseStepSeconds(rangeSeconds: number, maxPoints: number): number {
-  const required = Math.ceil(rangeSeconds / maxPoints)
+  const required = requiredStepSeconds(rangeSeconds, maxPoints)
   return STEP_LADDER_SECONDS.find((candidate) => candidate >= required) ?? required
 }
 
@@ -634,11 +647,11 @@ function resolveStep(
 ): ResolvedStep {
   if (step === undefined) return { seconds: chooseStepSeconds(rangeSeconds, maxPoints), auto: true }
   const seconds = parseStepSeconds(step)
-  const points = Math.ceil(rangeSeconds / seconds)
+  const points = countRangePoints(rangeSeconds, seconds)
   if (points > maxPoints) {
-    const required = Math.ceil(rangeSeconds / maxPoints)
+    const required = requiredStepSeconds(rangeSeconds, maxPoints)
     throw new GrafanaApiError(
-      `This range would return about ${points} points per series, above the limit of ${maxPoints}. Raise step to at least ${required} seconds, or shorten the range to ${maxPoints * seconds} seconds or less.`,
+      `This range would return about ${points} points per series, above the limit of ${maxPoints}. Raise step to at least ${required} seconds, or shorten the range to ${maxPoints * seconds - 1} seconds or less.`,
       { code: 'QUERY_RANGE_TOO_LARGE' },
     )
   }
