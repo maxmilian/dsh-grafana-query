@@ -840,7 +840,12 @@ const PROVISIONED = [
     labels: { severity: 'critical' },
     annotations: { summary: 's', description: 'd', runbook_url: 'r', internal: 'x' },
     data: [
-      { refId: 'A', datasourceUid: 'prom-1', model: { expr: 'rate(cpu[5m])', extra: 'noise' } },
+      {
+        refId: 'A',
+        datasourceUid: 'prom-1',
+        model: { expr: 'rate(cpu[5m])', type: 'range', extra: 'noise' },
+      },
+      { refId: 'B', datasourceUid: '__expr__', model: { expression: 'A', type: 'reduce' } },
       { refId: 'C', datasourceUid: '__expr__', model: { type: 'threshold' } },
     ],
   },
@@ -868,6 +873,7 @@ describe('listAlertRules', () => {
 
     expect(rule?.data).toEqual([
       { refId: 'A', datasourceUid: 'prom-1', expr: 'rate(cpu[5m])' },
+      { refId: 'B', datasourceUid: '__expr__', type: 'reduce' },
       { refId: 'C', datasourceUid: '__expr__', type: 'threshold' },
     ])
   })
@@ -1106,5 +1112,28 @@ describe('oversized upstream error bodies', () => {
       (await captureError(clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up' })))
         .code,
     ).toBe('GRAFANA_HTTP_ERROR')
+  })
+})
+
+describe('summarizeQueryNode', () => {
+  it('reports model.type only for Grafana expression nodes', async () => {
+    const body = [
+      {
+        uid: 'r',
+        data: [
+          { refId: 'A', datasourceUid: 'prom-1', model: { expr: 'up', type: 'range' } },
+          { refId: 'B', datasourceUid: '__expr__', model: { expr: '$A', type: 'reduce' } },
+          { refId: 'C', datasourceUid: 'prom-1', model: { type: 'range' } },
+        ],
+      },
+    ]
+    const fetchImpl = vi.fn(async () => jsonResponse(body))
+    const result = await clientWith(fetchImpl).listAlertRules({ includeQuery: true })
+
+    expect((result.data as { rules: { data: unknown[] }[] }).rules[0]?.data).toEqual([
+      { refId: 'A', datasourceUid: 'prom-1', expr: 'up' },
+      { refId: 'B', datasourceUid: '__expr__', expr: '$A', type: 'reduce' },
+      { refId: 'C', datasourceUid: 'prom-1' },
+    ])
   })
 })

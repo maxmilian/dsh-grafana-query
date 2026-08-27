@@ -915,6 +915,7 @@ function matchesAlertRule(
 }
 
 const MAX_EXPR_CHARS = 1_000
+const EXPRESSION_DATASOURCE_UID = '__expr__'
 const PROVISIONED_HINT = 'Narrow the result with folder_uid, rule_group, or title_contains.'
 
 function summarizeQueryNode(node: JsonObject): JsonObject {
@@ -925,8 +926,12 @@ function summarizeQueryNode(node: JsonObject): JsonObject {
   }
   const expr = readString(model.expr)
   if (expr) summary.expr = expr.slice(0, MAX_EXPR_CHARS)
-  const type = readString(model.type)
-  if (!expr && type) summary.type = type
+  // `type` marks a Grafana expression node (reduce / threshold / math), so it is
+  // driven by the datasource uid alone, independently of whether `expr` is present.
+  if (summary.datasourceUid === EXPRESSION_DATASOURCE_UID) {
+    const type = readString(model.type)
+    if (type) summary.type = type
+  }
   return summary
 }
 
