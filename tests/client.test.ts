@@ -906,3 +906,85 @@ describe('listAlertRules', () => {
     )
   })
 })
+
+const PROM_ERROR_BODY = {
+  status: 'error',
+  errorType: 'bad_data',
+  error: 'parse error: unexpected end of input',
+}
+
+describe('HTTP status classification with a Prometheus-shaped error body', () => {
+  it.each([
+    [401, 'AUTHENTICATION_FAILED'],
+    [403, 'PERMISSION_DENIED'],
+    [404, 'NOT_FOUND'],
+    [405, 'NOT_FOUND'],
+    [429, 'RATE_LIMITED'],
+    [500, 'SERVER_ERROR'],
+  ])('keeps the HTTP %s classification outside the query proxy', async (status, code) => {
+    const fetchImpl = vi.fn(async () => jsonResponse(PROM_ERROR_BODY, { status }))
+    expect((await captureError(clientWith(fetchImpl).health())).code).toBe(code)
+  })
+
+  it('stops at NOT_FOUND when data source metadata 404s with an error body', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_ERROR_BODY, { status: 404 }),
+    })
+    const error = await captureError(
+      clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up' }),
+    )
+
+    expect(error.code).toBe('NOT_FOUND')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('still maps a proxy 404 with an error body to a type error', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query': () => jsonResponse(PROM_ERROR_BODY, { status: 404 }),
+    })
+    expect(
+      (await captureError(clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up' })))
+        .code,
+    ).toBe('DATASOURCE_TYPE_UNSUPPORTED')
+  })
+
+  it('still maps a proxy 405 with an error body to NOT_FOUND after a degraded lookup', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => new Response('', { status: 403 }),
+      '/api/v1/query': () => jsonResponse(PROM_ERROR_BODY, { status: 405 }),
+    })
+    expect(
+      (await captureError(clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up' })))
+        .code,
+    ).toBe('NOT_FOUND')
+  })
+
+  it('rate-limits a proxy 429 instead of blaming the query', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query': () => jsonResponse(PROM_ERROR_BODY, { status: 429 }),
+    })
+    expect(
+      (await captureError(clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up' })))
+        .code,
+    ).toBe('RATE_LIMITED')
+  })
+
+  it.each([
+    [400, 'parse error: unexpected end of input'],
+    [422, undefined],
+  ])('reports a proxy %s as an upstream query failure', async (status, upstreamMessage) => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query': () => jsonResponse(PROM_ERROR_BODY, { status }),
+    })
+    const error = await captureError(
+      clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up' }),
+    )
+
+    expect(error.code).toBe('UPSTREAM_QUERY_FAILED')
+    expect(error.errorType).toBe('bad_data')
+    expect(error.upstreamMessage).toBe(upstreamMessage)
+  })
+})

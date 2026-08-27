@@ -213,13 +213,18 @@ export class GrafanaClient {
     const meta = await this.#datasourceMeta(uid, signal)
     if (meta) assertProxyable(uid, meta)
     try {
-      return await this.#get(`api/datasources/proxy/uid/${uid}/${path}`, query, signal)
+      return await this.#get(`api/datasources/proxy/uid/${uid}/${path}`, query, signal, true)
     } catch (error: unknown) {
       throw translateProxyError(error, uid, meta)
     }
   }
 
-  async #get(endpoint: string, query: URLSearchParams, signal?: AbortSignal): Promise<JsonValue> {
+  async #get(
+    endpoint: string,
+    query: URLSearchParams,
+    signal?: AbortSignal,
+    upstreamErrors = false,
+  ): Promise<JsonValue> {
     const url = new URL(endpoint, this.#config.baseUrl)
     url.search = query.toString()
     const context = createRequestContext(signal, this.#config.requestTimeoutMs)
@@ -229,7 +234,7 @@ export class GrafanaClient {
         method: 'GET',
         signal: context.controller.signal,
       })
-      return await this.#readResponse(response)
+      return await this.#readResponse(response, upstreamErrors)
     } catch (error: unknown) {
       throw normalizeRequestError(error, signal, context, this.#config.requestTimeoutMs)
     } finally {
@@ -237,10 +242,14 @@ export class GrafanaClient {
     }
   }
 
-  async #readResponse(response: Response): Promise<JsonValue> {
+  async #readResponse(response: Response, upstreamErrors: boolean): Promise<JsonValue> {
     if (!response.ok) {
-      const upstream = await readUpstreamBody(response, this.#config.maxResponseBytes)
-      if (upstream) throw createUpstreamError(response.status, upstream, this.#config.token)
+      if (upstreamErrors && UPSTREAM_ERROR_STATUSES.has(response.status)) {
+        const upstream = await readUpstreamBody(response, this.#config.maxResponseBytes)
+        if (upstream) throw createUpstreamError(response.status, upstream, this.#config.token)
+      } else {
+        await response.body?.cancel()
+      }
       throw createHttpError(
         response.status,
         safeHeader(response.headers, 'Retry-After', this.#config.token),
@@ -515,6 +524,12 @@ export function chooseStepSeconds(rangeSeconds: number, maxPoints: number): numb
   const required = requiredStepSeconds(rangeSeconds, maxPoints)
   return STEP_LADDER_SECONDS.find((candidate) => candidate >= required) ?? required
 }
+
+/**
+ * Statuses where a Prometheus `status: "error"` body is authoritative. Every other
+ * status keeps its HTTP classification, so 401/403/404/405/429/5xx stay diagnosable.
+ */
+const UPSTREAM_ERROR_STATUSES = new Set([400, 422])
 
 const UID_PATTERN = /^[A-Za-z0-9_-]{1,100}$/
 const FATAL_META_CODES = new Set<GrafanaErrorCode>(['AUTHENTICATION_FAILED', 'NOT_FOUND'])
