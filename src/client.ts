@@ -632,8 +632,11 @@ async function readUpstreamBody(
     await response.body?.cancel()
     return undefined
   }
+  // Only JSON parse or shape failures fall back to the HTTP classification;
+  // RESPONSE_TOO_LARGE from the bounded reader must keep its own code.
+  const text = await readBoundedBody(response, maximum)
   try {
-    const parsed = JSON.parse(await readBoundedBody(response, maximum)) as unknown
+    const parsed = JSON.parse(text) as unknown
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
     const body = parsed as JsonObject
     return body.status === 'error' ? body : undefined

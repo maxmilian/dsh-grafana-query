@@ -1077,3 +1077,34 @@ describe('403 responses name the missing permission', () => {
     expect(error.message).toContain('alert.provisioning:read')
   })
 })
+
+describe('oversized upstream error bodies', () => {
+  const oversized = (status: number) => () =>
+    new Response(
+      JSON.stringify({ status: 'error', errorType: 'bad_data', error: 'x'.repeat(50_000) }),
+      { status, headers: { 'content-type': 'application/json' } },
+    )
+
+  it.each([400, 422])('reports RESPONSE_TOO_LARGE for a %s body over the limit', async (status) => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query': oversized(status),
+    })
+    expect(
+      (await captureError(clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up' })))
+        .code,
+    ).toBe('RESPONSE_TOO_LARGE')
+  })
+
+  it('still falls back to the HTTP classification for an unparsable error body', async () => {
+    const fetchImpl = routed({
+      '/api/datasources/uid/prom-1': () => jsonResponse(PROM_META),
+      '/api/v1/query': () =>
+        new Response('{not json', { status: 400, headers: { 'content-type': 'application/json' } }),
+    })
+    expect(
+      (await captureError(clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up' })))
+        .code,
+    ).toBe('GRAFANA_HTTP_ERROR')
+  })
+})
