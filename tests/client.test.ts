@@ -278,9 +278,19 @@ describe('duration parsing', () => {
     expect(parseDurationMs('timeout', value)).toBe(expected)
   })
 
-  it.each(['1h30m', '1.5h', '-5s', '1y', '', 'abc', '10 s'])('rejects %s', (value) => {
-    expect(() => parseDurationMs('timeout', value)).toThrow(/timeout/)
-  })
+  it.each(['1h30m', '1.5h', '-5s', '1y', '', 'abc', '10 s', ' 5m', '5m ', ' 5m ', '\t30'])(
+    'rejects %o',
+    (value) => {
+      expect(() => parseDurationMs('timeout', value)).toThrow(/timeout/)
+    },
+  )
+
+  it.each([' 5m', '5m ', ' 500ms '])(
+    'rejects %o as a step because of the surrounding space',
+    (value) => {
+      expect(() => parseStepSeconds(value)).toThrow(/step/)
+    },
+  )
 
   it.each(['500ms', '1000ms'])('rejects %s as a step because ms is not allowed', (value) => {
     expect(() => parseStepSeconds(value)).toThrow(/ms/)

@@ -484,7 +484,7 @@ const UNIT_MS: Record<string, number> = {
 
 /** Parses a Prometheus-style duration (or a bare integer of seconds) into milliseconds. */
 export function parseDurationMs(name: string, value: string): number {
-  const match = DURATION_PATTERN.exec(value.trim())
+  const match = DURATION_PATTERN.exec(value)
   if (!match?.[1]) {
     throw inputError(
       `${name} must be an integer number of seconds or a single value with unit ms, s, m, h, d, or w (for example 30s).`,
@@ -496,7 +496,7 @@ export function parseDurationMs(name: string, value: string): number {
 
 /** Parses a step value into whole seconds, rejecting sub-second units. */
 export function parseStepSeconds(value: string): number {
-  if (value.trim().endsWith('ms')) {
+  if (value.endsWith('ms')) {
     throw inputError('step does not accept the ms unit; use whole seconds or a larger unit.')
   }
   const seconds = parseDurationMs('step', value) / 1_000
