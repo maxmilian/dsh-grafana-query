@@ -71,6 +71,19 @@ Grafana service account token（建議）與舊版 API key 都可以用——兩
 `Authorization: Bearer` header。Grafana Cloud 的 Access Policy token（`glc_`）是給 Cloud
 資料端點用的，**不適用**於這個 API。
 
+### 實際在 Grafana 上怎麼設
+
+下表的 scope 名稱是 Grafana 內部檢查用的，**UI 上並不是這樣勾**。建立 service account 時可行的組合是：
+
+1. basic role 選 **Viewer**——涵蓋 `datasources:read` 與 `datasources:query`。
+2. 再加 fixed role **Alerting → Full read-only access**——涵蓋 `alert.rules:read` 與
+   `alert.provisioning:read`。
+
+已於 2026-08-27 在 Grafana Cloud 用這個組合實測，六個工具全部可用。
+詳見[驗證紀錄](docs/superpowers/specs/2026-08-26-dsh-grafana-verification.md)。
+
+### Scope 對照
+
 | 工具 | 所需權限 |
 | --- | --- |
 | `grafana_health` | 無——`/api/health` 不需認證，因此本工具無法判斷 token 是否有效；要驗證 token 請用 `grafana_list_datasources`。 |

@@ -74,6 +74,20 @@ Grafana の service account token（推奨）と旧来の API key はどちら�
 両者とも同じ `Authorization: Bearer` ヘッダーを使います。Grafana Cloud の Access Policy
 token（`glc_`）は Cloud のデータエンドポイント用であり、この API では**使えません**。
 
+### Grafana 側での実際の設定方法
+
+下表のスコープ名は Grafana が内部で参照するものであり、**UI でそのままチェックする項目ではありません**。
+service account を作成するときに動作する組み合わせは次のとおりです。
+
+1. basic role に **Viewer** を選ぶ——`datasources:read` と `datasources:query` をカバーします。
+2. さらに fixed role **Alerting → Full read-only access** を付与する——`alert.rules:read` と
+   `alert.provisioning:read` をカバーします。
+
+2026-08-27 に Grafana Cloud でこの組み合わせを実測し、6 つのツールすべてが動作しました。
+詳細は[検証ノート](docs/superpowers/specs/2026-08-26-dsh-grafana-verification.md)を参照してください。
+
+### スコープ対照
+
 | ツール | 必要な権限 |
 | --- | --- |
 | `grafana_health` | なし——`/api/health` は認証を必要としないため、このツールでは token の有効性を判定できません。token の検証には `grafana_list_datasources` を使ってください。 |

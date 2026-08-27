@@ -74,6 +74,20 @@ A Grafana service account token (recommended) or a legacy API key both work — 
 same `Authorization: Bearer` header. A Grafana Cloud Access Policy token (`glc_`) is for the
 Cloud data endpoints and does **not** work with this API.
 
+### How to set this up in Grafana
+
+The scope names in the table below are what Grafana checks internally — they are not what
+you tick in the UI. When you create the service account, the combination that works is:
+
+1. Basic role **Viewer** — covers `datasources:read` and `datasources:query`.
+2. Add the fixed role **Alerting → Full read-only access** — covers `alert.rules:read` and
+   `alert.provisioning:read`.
+
+Verified on Grafana Cloud on 2026-08-27 with exactly that combination: all six tools worked.
+See [the verification note](docs/superpowers/specs/2026-08-26-dsh-grafana-verification.md).
+
+### Scope reference
+
 | Tool | Required permission |
 | --- | --- |
 | `grafana_health` | none — `/api/health` needs no authentication, so this tool cannot tell you whether the token is valid. Use `grafana_list_datasources` for that. |

@@ -134,6 +134,8 @@ metadata 本身回 404 的情況在上表已直接拋 `NOT_FOUND`，不會走到
 | `grafana_alert_state` | `alert.rules:read` |
 | `grafana_list_alert_rules` | `alert.provisioning:read` |
 
+上表是 Grafana **內部檢查**的 scope 名稱，不是 UI 上逐條勾選的項目。2026-08-27 於 Grafana Cloud 實測可行的設定方式為：service account 選 basic role **Viewer**，再加 fixed role **Alerting → Full read-only access**，六個工具全部可用（見 §11 與 verification note）。
+
 ### 2.6 Grafana Cloud 與自架的差異
 
 | 面向 | 自架 | Grafana Cloud |
@@ -666,24 +668,37 @@ const OUTPUT_SCHEMA = {
 
 單元測試全部 mock fetch，因此下列「Grafana 實際行為」的假設必須在真實環境跑過一次才能發版。**有可實測的 Grafana（自架 + Grafana Cloud 各一），因此以下全部為必跑項，非可選。**
 
+> **執行狀態（2026-08-27）**：已對 **Grafana Cloud**（`https://commeet.grafana.net`）跑過一輪，9 OK / 0 FAILED / 3 SKIP。逐項結果、觀察值與未涵蓋範圍見
+> [`2026-08-26-dsh-grafana-verification.md`](2026-08-26-dsh-grafana-verification.md)。
+> **自架那一輪尚未執行**，因此 L2 的 sub-path 情境仍未實測。
+
 執行方式：本機 `bun run build` 後，用 `scripts/smoke-dsh.sh`（照 `dsh-forge` 的做法）直接呼叫 client 方法，對自架與 Cloud 各跑一輪。
 
-| # | 要驗證的假設 | 怎麼驗 | 不符時的回退 |
-| --- | --- | --- | --- |
-| L1 | uid proxy 路徑在自架與 Cloud 都可用，且回傳 Prometheus 原生 JSON（非 dataframe） | `grafana_query` 打 `up` | 若 Cloud 不通 → 記入 README 已知限制，不改設計 |
-| L2 | sub-path baseUrl（`https://host/grafana/`）組出的 URL 正確 | 自架用 sub-path 反向代理跑一次 | 修 `normalizeBaseUrl` 或 endpoint join |
-| L3 | PromQL 語法錯確實回 **HTTP 400** + `{"status":"error","errorType":"bad_data","error":...}` | 送 `up(` | 若回 422 而非 400 → §6.2 的透出條件放寬到「400 或 422」，並同步改 spec 與測試 |
-| L4 | 超量 query 回 422（或 400）而非 200 | 送極大 range 的高基數 query | 依實際狀態碼調整 `UPSTREAM_QUERY_FAILED` 的映射表 |
-| L5 | `/api/prometheus/grafana/api/v1/rules` 的 `state` 用哪套詞彙 | 建一條必觸發的測試規則後查詢 | 正規化邏輯已同時吃兩套，只需確認 `meta.stateVocabulary` 標對；若出現第三種詞彙 → 補進正規化表（否則會落到 `unknown`） |
-| L6 | `/api/v1/provisioning/alert-rules` 在 `alert.provisioning:read` 下可讀、頂層為陣列，且 `data[].model.expr` 欄位路徑正確 | 用只有該權限的 service account 讀一次 | 若 `expr` 路徑不同 → 調整 §3.6 的摘要抽取；若權限名不同 → 修錯誤訊息與 README 權限表 |
-| L7 | Cloud stack 的 `/api/datasources` 回傳筆數與 `grafanacloud-*` 命名，確認 `type` / `name_contains` 篩選 + 分頁在實際筆數下夠用 | Cloud 實測 | 若篩選維度不足 → v0.2 再加篩選參數；cache 無上限，不需調參 |
-| L8 | 非 Prometheus datasource 走 proxy 時實際回什麼狀態碼 | 指到一個 MySQL/Loki datasource（metadata 可讀的情況） | 依實際狀態碼補進 §2.3 的判別表 |
-| L9 | 舊 API key 與 service account token 都能通過 `Authorization: Bearer` | 兩種 token 各跑一次 `grafana_health` | 若舊 key 不通 → README 改為「僅支援 service account token」 |
-| L10 | Cloud 的 rate limit 是否在正常使用下觸發 429 | 連續跑 20 次 query | 若容易觸發 → README 加註；設計不變（不做自動重試） |
-| L11 | `maxResponseBytes` 在真實大回應下確實中止而非 OOM | 對 Cloud 送一個會回數 MB 的 query | 調整 streaming 讀取實作 |
-| L12 | 只有 `datasources:query` 而無 `datasources:read` 的 service account，能走通 §2.3 的 403 降級路徑 | 建一個只有 query 權限的 service account 跑 `grafana_query` | 若 Grafana 不允許此權限組合 → 簡化 §2.3，把 403 也改為直接拋 `PERMISSION_DENIED` |
+| # | 狀態 | 要驗證的假設 | 怎麼驗 | 不符時的回退 |
+| --- | --- | --- | --- | --- |
+| L1 | ✅ 已驗（Cloud） | uid proxy 路徑在自架與 Cloud 都可用，且回傳 Prometheus 原生 JSON（非 dataframe） | `grafana_query` 打 `up` | 若 Cloud 不通 → 記入 README 已知限制，不改設計 |
+| L2 | ⚠️ 部分（僅 root path） | sub-path baseUrl（`https://host/grafana/`）組出的 URL 正確 | 自架用 sub-path 反向代理跑一次 | 修 `normalizeBaseUrl` 或 endpoint join |
+| L3 | ✅ 已驗（Cloud） | PromQL 語法錯確實回 **HTTP 400** + `{"status":"error","errorType":"bad_data","error":...}` | 送 `up(` | 若回 422 而非 400 → §6.2 的透出條件放寬到「400 或 422」，並同步改 spec 與測試 |
+| L4 | ✅ 已驗（Cloud，422 `execution`） | 超量 query 回 422（或 400）而非 200 | 送極大 range 的高基數 query | 依實際狀態碼調整 `UPSTREAM_QUERY_FAILED` 的映射表 |
+| L5 | ⚠️ 部分（只出現 `inactive`） | `/api/prometheus/grafana/api/v1/rules` 的 `state` 用哪套詞彙 | 建一條必觸發的測試規則後查詢 | 正規化邏輯已同時吃兩套，只需確認 `meta.stateVocabulary` 標對；若出現第三種詞彙 → 補進正規化表（否則會落到 `unknown`） |
+| L6 | ✅ 已驗（Cloud） | `/api/v1/provisioning/alert-rules` 在 `alert.provisioning:read` 下可讀、頂層為陣列，且 `data[].model.expr` 欄位路徑正確 | 用只有該權限的 service account 讀一次 | 若 `expr` 路徑不同 → 調整 §3.6 的摘要抽取；若權限名不同 → 修錯誤訊息與 README 權限表 |
+| L7 | ✅ 已驗（Cloud，26 筆 / 14 型別） | Cloud stack 的 `/api/datasources` 回傳筆數與 `grafanacloud-*` 命名，確認 `type` / `name_contains` 篩選 + 分頁在實際筆數下夠用 | Cloud 實測 | 若篩選維度不足 → v0.2 再加篩選參數；cache 無上限，不需調參 |
+| L8 | ⚠️ 部分（前置檢查攔下，未到 proxy） | 非 Prometheus datasource 走 proxy 時實際回什麼狀態碼 | 指到一個 MySQL/Loki datasource（metadata 可讀的情況） | 依實際狀態碼補進 §2.3 的判別表 |
+| L9 | ❌ 未驗（無 legacy key 可用） | 舊 API key 與 service account token 都能通過 `Authorization: Bearer` | 兩種 token 各跑一次 `grafana_health` | 若舊 key 不通 → README 改為「僅支援 service account token」 |
+| L10 | ✅ 已驗（Cloud，0 次 429） | Cloud 的 rate limit 是否在正常使用下觸發 429 | 連續跑 20 次 query | 若容易觸發 → README 加註；設計不變（不做自動重試） |
+| L11 | ❌ 未驗（刻意跳過，見驗證紀錄） | `maxResponseBytes` 在真實大回應下確實中止而非 OOM | 對 Cloud 送一個會回數 MB 的 query | 調整 streaming 讀取實作 |
+| L12 | ❌ 未驗（尚未建立第二個 service account） | 只有 `datasources:query` 而無 `datasources:read` 的 service account，能走通 §2.3 的 403 降級路徑 | 建一個只有 query 權限的 service account 跑 `grafana_query` | 若 Grafana 不允許此權限組合 → 簡化 §2.3，把 403 也改為直接拋 `PERMISSION_DENIED` |
 
 驗證結果寫進 `docs/superpowers/specs/` 下的一份 verification note，並把 L3 / L5 / L8 / L12 的實測結論回填到本 spec 對應章節。
+
+**已回填的結論（2026-08-27，Grafana Cloud）**：
+
+- **L3 → §6.2 / §3.3**：如設計所料。Cloud 對 PromQL 語法錯回 HTTP **400** + `errorType: "bad_data"`，`error` 欄位帶得出可用的 parse 診斷（實測 `invalid parameter "query": 1:4: parse error: unclosed left parenthesis`）。§6.2「若回 422 就放寬到 400 或 422」的回退**不需要啟用**。
+- **L5 → §2.4**：Prometheus 相容端點回的是 Prometheus 詞彙（實測直接拿到字面的 `inactive`），`meta.stateVocabulary` 標為 `prometheus`，別名表未被觸發，也沒出現第三種詞彙。**但這輪只出現 `inactive`**，`alerting→firing`、`normal→inactive` 與 `unknown` + `stateRaw` 的路徑仍未實測。
+- **L8 → §2.3**：判別表維持原樣，且**仍未驗證**。只要 metadata 讀得到，§3.3 的前置檢查就會在發出 proxy 請求前擋下非 Prometheus datasource（實測 `status=-`），因此這條路徑根本產生不出 proxy 狀態碼。判別表中「metadata 查詢成功」那一列，只有在「Prometheus datasource 的後端不提供 `/api/v1/query*`」時才會走到。
+- **L12 → §2.3**：未驗證，無結論可回填。
+
+**實測時使用的權限設定**：service account 選 basic role **Viewer**，再加 fixed role **Alerting → Full read-only access**。§2.2 列的四個 scope 是 Grafana 內部檢查用的名稱，UI 上並非逐條勾選。
 
 ---
 
