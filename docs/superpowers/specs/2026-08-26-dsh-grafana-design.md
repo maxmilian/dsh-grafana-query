@@ -452,7 +452,9 @@ STEP_LADDER_SECONDS        = [1, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 36
 3. **長度上限 200 字元**（`MAX_UPSTREAM_ERROR_CHARS`），超過截斷並補 `…`。
 4. **過濾疑似機密**：透出前先跑 redaction——
    - 若字串包含設定中的 `token` 子字串 → 整個丟棄，不透出。
-   - 以下 pattern 命中就把命中片段換成 `[redacted]`：`glsa_\S+`、`glc_\S+`、`eyJ[A-Za-z0-9._-]{10,}`（JWT 樣式）、`(?i)(authorization|bearer|api[-_]?key|password|secret|token)\s*[:=]\s*\S+`。
+   - 以下 pattern 命中就把命中片段換成 `[redacted]`（**依序套用**）：`glsa_\S+`、`glc_\S+`、`eyJ[A-Za-z0-9._-]{10,}`（JWT 樣式）、`(?i)\bbearer\s+\S+`、`(?i)\b(authorization|bearer|api[-_]?key|password|secret|token)\s*[:=]\s*\S+`。
+   - **分隔符 `[:=]` 是必填、關鍵字前要有 word boundary**：少了這兩者，`unexpected token "]"`、`unknown metric secret_expiry_seconds`、`api_key_total` 這類真實 PromQL 診斷會被吃掉，而讓 agent 看懂 PromQL 錯在哪正是本節存在的理由。
+   - `Bearer <value>` 不帶 `:` 或 `=`，因此另立一條 `\bbearer\s+\S+` 並**排在關鍵字 pattern 之前**——否則 `Authorization: Bearer abc` 只會被遮掉標籤、把憑證本身留下。它要求 `bearer` 後面接空白，故不會誤傷 `identifier "bearer"` 或 `bearer_token_total`。
    - redaction 後若剩餘可見字元少於 8 個 → 整個丟棄。
 5. 透出的內容放在 `GrafanaApiError.upstreamMessage`，並**附加**到 `message` 尾端（格式：`Prometheus rejected the query (bad_data): <upstreamMessage>`）。
 6. `errorType` 本身是 Prometheus 的固定詞彙（`bad_data` / `timeout` / `canceled` / `execution` / `internal` / `unavailable` / `not_acceptable`），非自由文字，因此**任何狀態碼都可帶**；非白名單值一律丟棄。

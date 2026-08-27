@@ -66,11 +66,43 @@ describe('createUpstreamError', () => {
     'leaked glsa_abcdefghij in query',
     'leaked glc_abcdefghij in query',
     'leaked eyJhbGciOiJIUzI1NiJ9 in query',
-    'Authorization: Bearer abcdefghij failed',
+    'request rejected because Authorization: Bearer abcdefghij was not accepted',
   ])('redacts secret-looking fragments: %s', (error) => {
     const result = createUpstreamError(400, { ...BAD_DATA, error }, TOKEN)
     expect(result.upstreamMessage).toContain('[redacted]')
     expect(result.upstreamMessage).not.toMatch(/glsa_|glc_|eyJ/)
+  })
+
+  it('redacts the value after a bare Bearer, not just the keyword', () => {
+    const result = createUpstreamError(
+      400,
+      {
+        ...BAD_DATA,
+        error: 'request rejected because Authorization: Bearer abcdefghij was not accepted',
+      },
+      TOKEN,
+    )
+    expect(result.upstreamMessage).not.toContain('abcdefghij')
+  })
+
+  it.each([
+    '1:8: parse error: unexpected token "]"',
+    'unknown metric secret_expiry_seconds in query',
+    'expansion of api_key_total failed: no such metric',
+    'invalid parameter "query": 1:5: parse error: unexpected identifier "bearer"',
+    'token_bucket_refill_total has no data points',
+  ])('leaves a real PromQL diagnostic intact: %s', (error) => {
+    const result = createUpstreamError(400, { ...BAD_DATA, error }, TOKEN)
+    expect(result.upstreamMessage).toBe(error)
+  })
+
+  it.each([
+    'password=hunter2 rejected',
+    'api-key = abcdefghij rejected',
+    'secret: abcdefghij rejected',
+  ])('still redacts a labelled credential: %s', (error) => {
+    const result = createUpstreamError(400, { ...BAD_DATA, error }, TOKEN)
+    expect(result.upstreamMessage).toContain('[redacted]')
   })
 
   it('drops the message when redaction leaves too little signal', () => {

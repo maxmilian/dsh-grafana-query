@@ -91,7 +91,10 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /glsa_\S+/g,
   /glc_\S+/g,
   /eyJ[A-Za-z0-9._-]{10,}/g,
-  /(authorization|bearer|api[-_]?key|password|secret|token)\s*[:=]?\s*\S+/gi,
+  // `Bearer <value>` has no `:`/`=`, so the labelled-credential pattern below
+  // would strip the label and leave the credential. It has to run first.
+  /\bbearer\s+\S+/gi,
+  /\b(authorization|bearer|api[-_]?key|password|secret|token)\s*[:=]\s*\S+/gi,
 ]
 
 /** Creates a safe error for an unsuccessful HTTP response. */
