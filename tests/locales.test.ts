@@ -38,6 +38,22 @@ describe('tool metadata locales', () => {
     }
   })
 
+  it('discloses the range and total-point ceilings in every query_range description', () => {
+    for (const locale of LOCALES) {
+      const description = grafanaMessages(locale).queryRangeDescription
+      expect(description, locale).toContain('31')
+      expect(description, locale).toMatch(/20000|20,000/)
+    }
+  })
+
+  it('discloses the 500-rule ceiling in both alert tool descriptions', () => {
+    for (const locale of LOCALES) {
+      const messages = grafanaMessages(locale)
+      expect(messages.alertStateDescription, locale).toContain('500')
+      expect(messages.alertRulesDescription, locale).toContain('500')
+    }
+  })
+
   it('never claims that grafana_health validates the token', () => {
     for (const locale of LOCALES) {
       const description = grafanaMessages(locale).healthDescription

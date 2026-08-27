@@ -48,13 +48,13 @@ const ENGLISH: GrafanaMessages = {
     'Run an instant PromQL query against a Prometheus data source through the Grafana proxy. Returns at most 100 series by default.',
   queryTitle: 'Run an instant PromQL query',
   queryRangeDescription:
-    'Run a range PromQL query through the Grafana proxy. When step is omitted it is chosen automatically so each series stays within max_points (default 200); an explicit step that would exceed that limit is rejected.',
+    'Run a range PromQL query through the Grafana proxy. When step is omitted it is chosen automatically so each series stays within max_points (default 200); an explicit step that would exceed that limit is rejected. The range must not exceed 31 days. If the response would exceed 20000 points in total, trailing series are dropped whole and meta.truncated says so.',
   queryRangeTitle: 'Run a range PromQL query',
   alertStateDescription:
-    'List the current state of Grafana unified alerting rules. Returns firing, pending, and unknown rules by default.',
+    'List the current state of Grafana unified alerting rules. Returns firing, pending, and unknown rules by default. At most 500 matching rules are reachable; the rest cannot be paged to, so narrow the result with folder_contains or rule_contains.',
   alertStateTitle: 'Read Grafana alert state',
   alertRulesDescription:
-    'List Grafana unified alerting rule definitions. Query models are omitted unless include_query is set.',
+    'List Grafana unified alerting rule definitions. Query models are omitted unless include_query is set. At most 500 matching rules are reachable; the rest cannot be paged to, so narrow the result with folder_uid, rule_group, or title_contains.',
   alertRulesTitle: 'List Grafana alert rules',
   datasourceUid: 'Data source uid from grafana_list_datasources',
   query: 'PromQL expression, 1-4000 characters',
@@ -91,13 +91,13 @@ const TRADITIONAL_CHINESE: GrafanaMessages = {
     '透過 Grafana proxy 對 Prometheus datasource 執行 instant PromQL 查詢。預設最多回傳 100 條 series。',
   queryTitle: '執行 instant PromQL 查詢',
   queryRangeDescription:
-    '透過 Grafana proxy 執行區間 PromQL 查詢。省略 step 時會自動選一個值，讓每條 series 的點數不超過 max_points（預設 200）；明確指定的 step 若會超過上限則直接拒絕。',
+    '透過 Grafana proxy 執行區間 PromQL 查詢。省略 step 時會自動選一個值，讓每條 series 的點數不超過 max_points（預設 200）；明確指定的 step 若會超過上限則直接拒絕。區間最長 31 天；回應總點數若會超過 20000，後面的 series 會被整條捨棄，並以 meta.truncated 標示。',
   queryRangeTitle: '執行區間 PromQL 查詢',
   alertStateDescription:
-    '列出 Grafana unified alerting 規則的當前狀態。預設回傳 firing、pending 與 unknown 的規則。',
+    '列出 Grafana unified alerting 規則的當前狀態。預設回傳 firing、pending 與 unknown 的規則。最多只能取得前 500 條符合的規則，其餘無法靠翻頁取得，請用 folder_contains 或 rule_contains 縮小範圍。',
   alertStateTitle: '讀取 Grafana 告警狀態',
   alertRulesDescription:
-    '列出 Grafana unified alerting 的規則定義。未設定 include_query 時不會回傳查詢模型。',
+    '列出 Grafana unified alerting 的規則定義。未設定 include_query 時不會回傳查詢模型。最多只能取得前 500 條符合的規則，其餘無法靠翻頁取得，請用 folder_uid、rule_group 或 title_contains 縮小範圍。',
   alertRulesTitle: '列出 Grafana 告警規則',
   datasourceUid: '來自 grafana_list_datasources 的 datasource uid',
   query: 'PromQL 運算式，1-4000 字元',
@@ -133,13 +133,13 @@ const SIMPLIFIED_CHINESE: GrafanaMessages = {
     '通过 Grafana proxy 对 Prometheus datasource 执行 instant PromQL 查询。默认最多返回 100 条 series。',
   queryTitle: '执行 instant PromQL 查询',
   queryRangeDescription:
-    '通过 Grafana proxy 执行区间 PromQL 查询。省略 step 时会自动选择一个值，使每条 series 的点数不超过 max_points（默认 200）；显式指定的 step 若会超过上限则直接拒绝。',
+    '通过 Grafana proxy 执行区间 PromQL 查询。省略 step 时会自动选择一个值，使每条 series 的点数不超过 max_points（默认 200）；显式指定的 step 若会超过上限则直接拒绝。区间最长 31 天；响应总点数若会超过 20000，后面的 series 会被整条丢弃，并以 meta.truncated 标示。',
   queryRangeTitle: '执行区间 PromQL 查询',
   alertStateDescription:
-    '列出 Grafana unified alerting 规则的当前状态。默认返回 firing、pending 与 unknown 的规则。',
+    '列出 Grafana unified alerting 规则的当前状态。默认返回 firing、pending 与 unknown 的规则。最多只能获取前 500 条匹配的规则，其余无法通过翻页获取，请用 folder_contains 或 rule_contains 缩小范围。',
   alertStateTitle: '读取 Grafana 告警状态',
   alertRulesDescription:
-    '列出 Grafana unified alerting 的规则定义。未设置 include_query 时不会返回查询模型。',
+    '列出 Grafana unified alerting 的规则定义。未设置 include_query 时不会返回查询模型。最多只能获取前 500 条匹配的规则，其余无法通过翻页获取，请用 folder_uid、rule_group 或 title_contains 缩小范围。',
   alertRulesTitle: '列出 Grafana 告警规则',
   datasourceUid: '来自 grafana_list_datasources 的 datasource uid',
   query: 'PromQL 表达式，1-4000 字符',
@@ -175,13 +175,13 @@ const JAPANESE: GrafanaMessages = {
     'Grafana のプロキシ経由で Prometheus データソースに instant PromQL クエリを実行します。既定では最大 100 series を返します。',
   queryTitle: 'instant PromQL クエリを実行',
   queryRangeDescription:
-    'Grafana のプロキシ経由で範囲 PromQL クエリを実行します。step を省略すると各 series が max_points（既定 200）を超えないよう自動的に選ばれ、上限を超える step を明示した場合は拒否されます。',
+    'Grafana のプロキシ経由で範囲 PromQL クエリを実行します。step を省略すると各 series が max_points（既定 200）を超えないよう自動的に選ばれ、上限を超える step を明示した場合は拒否されます。範囲は最長 31 日です。応答の合計ポイント数が 20000 を超える場合、後方の series は丸ごと破棄され、meta.truncated で示されます。',
   queryRangeTitle: '範囲 PromQL クエリを実行',
   alertStateDescription:
-    'Grafana unified alerting のルールの現在の状態を一覧します。既定では firing、pending、unknown のルールを返します。',
+    'Grafana unified alerting のルールの現在の状態を一覧します。既定では firing、pending、unknown のルールを返します。取得できるのは一致したルールの先頭 500 件までで、それ以降はページ送りでも取得できません。folder_contains か rule_contains で絞り込んでください。',
   alertStateTitle: 'Grafana のアラート状態を読む',
   alertRulesDescription:
-    'Grafana unified alerting のルール定義を一覧します。include_query を指定しない限りクエリモデルは省略されます。',
+    'Grafana unified alerting のルール定義を一覧します。include_query を指定しない限りクエリモデルは省略されます。取得できるのは一致したルールの先頭 500 件までで、それ以降はページ送りでも取得できません。folder_uid、rule_group、title_contains で絞り込んでください。',
   alertRulesTitle: 'Grafana のアラートルールを一覧',
   datasourceUid: 'grafana_list_datasources で取得したデータソース uid',
   query: 'PromQL 式、1〜4000 文字',
