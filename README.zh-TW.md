@@ -82,6 +82,12 @@ Grafana service account token（建議）與舊版 API key 都可以用——兩
 已於 2026-08-27 在 Grafana Cloud 用這個組合實測，六個工具全部可用。
 詳見[驗證紀錄](docs/superpowers/specs/2026-08-26-dsh-grafana-verification.md)。
 
+**用最小權限的 token 不會讓工具變難用**：Grafana 對 `GET /api/datasources` 是**回傳過濾後的列表**，
+而不是回 403。因此只被授予單一 datasource **Query** 權限的 token，`grafana_list_datasources`
+就只會列出那一個——2026-08-27 實測：Viewer token 拿到 26 筆，受限 token 拿到 1 筆。你不會看到一堆
+查下去就 403 的項目。（datasource 層級的 Query 權限也隱含允許讀該 datasource 的 metadata，
+因此不存在「查得動但讀不到」的狀態。）
+
 ### Scope 對照
 
 | 工具 | 所需權限 |

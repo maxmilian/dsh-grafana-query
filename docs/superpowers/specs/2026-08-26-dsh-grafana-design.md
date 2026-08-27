@@ -82,17 +82,19 @@ GET {baseUrl}api/datasources/proxy/uid/{uid}/api/v1/query_range?query=...&start=
 | 200 且為 JSON 物件 | 寫入 cache，回到步驟 1 的判斷 | 是 |
 | 401 | **直接拋 `AUTHENTICATION_FAILED`**（token 壞掉，繼續打 proxy 也沒意義） | 否 |
 | 404 | **直接拋 `NOT_FOUND`**（uid 不存在，訊息提示先跑 `grafana_list_datasources`） | 否 |
-| 403 | 降級：不阻擋，直接打 proxy（service account 可能只有 `datasources:query` 而無 `datasources:read`） | 否 |
+| 403 | 降級：不阻擋，直接打 proxy | 否 |
 | timeout / 網路錯誤 / 非 JSON / 其他非 2xx | 降級：不阻擋，直接打 proxy | 否 |
 
-降級路徑不做負向快取——降級是暫時性的（權限或網路），記住失敗只會讓後續正常的請求也被跳過。
+降級路徑不做負向快取——降級是暫時性的（網路或權限變更），記住失敗只會讓後續正常的請求也被跳過。
+
+> **403 那一列的實測定性（L12，2026-08-27）**：原本的理由是「service account 可能只有 `datasources:query` 而無 `datasources:read`」。**實測推翻了這個前提**——datasource 層級的 Query 權限隱含允許讀該 datasource 的 metadata，所以那種 token 構造不出來。metadata 回 403 只發生在 token 對該 datasource **完全沒有授權**的情況，而此時 proxy 也必然回 403。因此這一列**在實務上不會因權限不足而讓查詢起死回生**，屬防禦性程式碼；它仍有作用的地方是：降級之後由 proxy 的 403 產生指名 `datasources:query` 的準確錯誤訊息。**邏輯保留不動**——真正會觸發降級的是 timeout、網路錯誤、非 JSON 與其他非 2xx。
 
 **proxy 回應 404 / 405 的判別（避免同一狀態碼映射到兩個錯誤碼）**：
 
 | 情境 | proxy 回 404/405 時映射到 |
 | --- | --- |
 | metadata 查詢**成功**（cache 有值、確認 uid 存在且 type 為 `prometheus`） | `DATASOURCE_TYPE_UNSUPPORTED`——uid 確實存在，那 404 只可能來自後端不認得 `/api/v1/query*` 路徑 |
-| metadata 查詢**失敗而降級**（403 / timeout / 網路 / 非 JSON） | `NOT_FOUND`，且訊息**同時列出兩種可能**：「uid 不存在，或該 datasource 不是 Prometheus 相容型別；請用 `grafana_list_datasources` 確認」 |
+| metadata 查詢**失敗而降級**（timeout / 網路 / 非 JSON / 其他非 2xx；403 見上方註記，實務上罕見） | `NOT_FOUND`，且訊息**同時列出兩種可能**：「uid 不存在，或該 datasource 不是 Prometheus 相容型別；請用 `grafana_list_datasources` 確認」 |
 
 metadata 本身回 404 的情況在上表已直接拋 `NOT_FOUND`，不會走到 proxy。「uid 打錯」是最常見的情境，因此在資訊不足時一律偏向 `NOT_FOUND`。
 
@@ -190,6 +192,7 @@ metadata 本身回 404 的情況在上表已直接拋 `NOT_FOUND`，不會走到
   `meta` 為 `{ total, page, pageSize }`，`total` 是套用 filter 後、切頁前的數量。**此工具的 `meta` 不含 `truncated`**（分頁不是截斷）。
 - **副作用**：結果同時餵進 §2.3 的 metadata cache。
 - **錯誤情境**：401 → `AUTHENTICATION_FAILED`；403（缺 `datasources:read`）→ `PERMISSION_DENIED`；非 JSON → `INVALID_RESPONSE`；超過 `maxResponseBytes` → `RESPONSE_TOO_LARGE`。
+- **受限 token 的行為（L12 實測，2026-08-27）**：權限受限的 token 打這個端點時，Grafana 回的是**過濾後的列表**（只含它有權限的 datasource；實測從 26 筆降到 1 筆），既不是 403 也不是完整清單。因此本工具在最小權限 token 下會自然只列出真正查得動的 datasource，不需要插件端再做過濾（也呼應 §10 的 H1：不做 datasource 白名單）。
 
 ### 3.3 `grafana_query`（instant query）
 
@@ -668,9 +671,9 @@ const OUTPUT_SCHEMA = {
 
 單元測試全部 mock fetch，因此下列「Grafana 實際行為」的假設必須在真實環境跑過一次才能發版。**有可實測的 Grafana（自架 + Grafana Cloud 各一），因此以下全部為必跑項，非可選。**
 
-> **執行狀態（2026-08-27）**：已對 **Grafana Cloud**（`https://commeet.grafana.net`）跑過一輪，9 OK / 0 FAILED / 3 SKIP。逐項結果、觀察值與未涵蓋範圍見
+> **執行狀態（2026-08-27）**：已對 **Grafana Cloud**（`https://commeet.grafana.net`）跑過一輪，9 OK / 0 FAILED / 3 SKIP，之後另以第二個 service account 手動補跑 L12。逐項結果、觀察值與未涵蓋範圍見
 > [`2026-08-26-dsh-grafana-verification.md`](2026-08-26-dsh-grafana-verification.md)。
-> **自架那一輪尚未執行**，因此 L2 的 sub-path 情境仍未實測。
+> **L12 的假設經實測推翻**（見下表與 §2.3）。**自架那一輪尚未執行**，因此 L2 的 sub-path 情境仍未實測。
 
 執行方式：本機 `bun run build` 後，用 `scripts/smoke-dsh.sh`（照 `dsh-forge` 的做法）直接呼叫 client 方法，對自架與 Cloud 各跑一輪。
 
@@ -687,7 +690,7 @@ const OUTPUT_SCHEMA = {
 | L9 | ❌ 未驗（無 legacy key 可用） | 舊 API key 與 service account token 都能通過 `Authorization: Bearer` | 兩種 token 各跑一次 `grafana_health` | 若舊 key 不通 → README 改為「僅支援 service account token」 |
 | L10 | ✅ 已驗（Cloud，0 次 429） | Cloud 的 rate limit 是否在正常使用下觸發 429 | 連續跑 20 次 query | 若容易觸發 → README 加註；設計不變（不做自動重試） |
 | L11 | ❌ 未驗（刻意跳過，見驗證紀錄） | `maxResponseBytes` 在真實大回應下確實中止而非 OOM | 對 Cloud 送一個會回數 MB 的 query | 調整 streaming 讀取實作 |
-| L12 | ❌ 未驗（尚未建立第二個 service account） | 只有 `datasources:query` 而無 `datasources:read` 的 service account，能走通 §2.3 的 403 降級路徑 | 建一個只有 query 權限的 service account 跑 `grafana_query` | 若 Grafana 不允許此權限組合 → 簡化 §2.3，把 403 也改為直接拋 `PERMISSION_DENIED` |
+| L12 | 🔄 已驗，**假設不成立** | 只有 `datasources:query` 而無 `datasources:read` 的 service account，能走通 §2.3 的 403 降級路徑 | 建一個只有 query 權限的 service account 跑 `grafana_query` | 實測：datasource 層級的 **Query** 權限**隱含允許讀該 datasource 的 metadata**，因此這種 token 根本構造不出來。回退條款不啟用——§2.3 的 403 那列**保留**但重新定性為防禦性（見下方回填結論） |
 
 驗證結果寫進 `docs/superpowers/specs/` 下的一份 verification note，並把 L3 / L5 / L8 / L12 的實測結論回填到本 spec 對應章節。
 
@@ -696,7 +699,8 @@ const OUTPUT_SCHEMA = {
 - **L3 → §6.2 / §3.3**：如設計所料。Cloud 對 PromQL 語法錯回 HTTP **400** + `errorType: "bad_data"`，`error` 欄位帶得出可用的 parse 診斷（實測 `invalid parameter "query": 1:4: parse error: unclosed left parenthesis`）。§6.2「若回 422 就放寬到 400 或 422」的回退**不需要啟用**。
 - **L5 → §2.4**：Prometheus 相容端點回的是 Prometheus 詞彙（實測直接拿到字面的 `inactive`），`meta.stateVocabulary` 標為 `prometheus`，別名表未被觸發，也沒出現第三種詞彙。**但這輪只出現 `inactive`**，`alerting→firing`、`normal→inactive` 與 `unknown` + `stateRaw` 的路徑仍未實測。
 - **L8 → §2.3**：判別表維持原樣，且**仍未驗證**。只要 metadata 讀得到，§3.3 的前置檢查就會在發出 proxy 請求前擋下非 Prometheus datasource（實測 `status=-`），因此這條路徑根本產生不出 proxy 狀態碼。判別表中「metadata 查詢成功」那一列，只有在「Prometheus datasource 的後端不提供 `/api/v1/query*`」時才會走到。
-- **L12 → §2.3**：未驗證，無結論可回填。
+- **L12 → §2.3**：**假設遭推翻，且這張表的意義隨之改變。** 對單一 datasource 授予 **Query** 權限會隱含允許讀該 datasource 的 metadata（實測：query-only token 對 `grafanacloud-prom` 的 metadata 回 200、對沒授權的 `grafanacloud-logs` 回 403），因此「能查詢但讀不到 metadata」不是 Grafana 能進入的狀態。`403 → 降級` 這一列**永遠不會是查詢成功與失敗的分水嶺**。但它不是死碼：token 完全沒有授權的 datasource 仍會在 metadata 階段回 403，降級之後由 proxy 自己的 403 產生準確的 `PERMISSION_DENIED … needs the datasources:query permission`（已對 build 後的 `lib/` 重放此情境確認：共發 2 個請求，最終回 `PERMISSION_DENIED`）。因此**保留該列，但定性為防禦性**，回退條款（把 403 改為直接拋 `PERMISSION_DENIED`）不啟用。
+- **L12 附帶觀察 → §3.2**：權限受限的 token 呼叫 `GET /api/datasources` 時，Grafana 回的是**過濾後的列表**（實測 26 → 1），既不是 403 也不是完整清單。因此 `grafana_list_datasources` 在最小權限 token 下只會列出真正查得動的 datasource。
 
 **實測時使用的權限設定**：service account 選 basic role **Viewer**，再加 fixed role **Alerting → Full read-only access**。§2.2 列的四個 scope 是 Grafana 內部檢查用的名稱，UI 上並非逐條勾選。
 

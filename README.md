@@ -86,6 +86,13 @@ you tick in the UI. When you create the service account, the combination that wo
 Verified on Grafana Cloud on 2026-08-27 with exactly that combination: all six tools worked.
 See [the verification note](docs/superpowers/specs/2026-08-26-dsh-grafana-verification.md).
 
+A least-privilege token stays usable. Grafana **filters** `GET /api/datasources` by what the
+token may reach rather than returning 403, so under a token granted **Query** on a single
+data source, `grafana_list_datasources` returns just that one — measured 2026-08-27: 26
+entries for a Viewer token, 1 for the restricted one. You never get a list full of data
+sources that would fail when queried. (A per-data-source Query grant also implies metadata
+read on that data source, so there is no "can query but cannot read" state to worry about.)
+
 ### Scope reference
 
 | Tool | Required permission |

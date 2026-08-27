@@ -86,6 +86,13 @@ service account を作成するときに動作する組み合わせは次のと�
 2026-08-27 に Grafana Cloud でこの組み合わせを実測し、6 つのツールすべてが動作しました。
 詳細は[検証ノート](docs/superpowers/specs/2026-08-26-dsh-grafana-verification.md)を参照してください。
 
+**最小権限の token でも使い勝手は落ちません。** Grafana は `GET /api/datasources` に対して 403 を返す
+のではなく、その token が到達できるものだけに**絞り込んだ一覧**を返します。単一のデータソースに
+**Query** 権限だけを付与した token では、`grafana_list_datasources` はその 1 件だけを返します
+（2026-08-27 実測: Viewer token は 26 件、制限付き token は 1 件）。クエリすると 403 になる項目が
+一覧に並ぶことはありません。なお、データソース単位の Query 権限はそのデータソースの metadata 読み取りも
+含むため、「クエリはできるが読めない」という状態は存在しません。
+
 ### スコープ対照
 
 | ツール | 必要な権限 |

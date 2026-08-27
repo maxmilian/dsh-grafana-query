@@ -207,6 +207,16 @@ export class GrafanaClient {
     }
   }
 
+  /**
+   * Reads a data source's type and access mode, degrading to `undefined` rather than
+   * failing when the lookup is not usable. 401 and 404 are fatal; everything else lets the
+   * proxy request go ahead and produce the more accurate error.
+   *
+   * The degrade is driven by transport problems (timeout, network, non-JSON, other non-2xx),
+   * not by permissions: live verification on 2026-08-27 (L12) showed that a Query grant on a
+   * data source implies metadata read on it, so a token cannot query one it cannot read. A
+   * 403 here means no grant at all, in which case the proxy returns 403 too.
+   */
   async #datasourceMeta(uid: string, signal?: AbortSignal): Promise<DatasourceMeta | undefined> {
     const cached = this.#datasourceCache.get(uid)
     if (cached) return cached
