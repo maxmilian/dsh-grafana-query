@@ -24,6 +24,25 @@ and alert state. Dashboard and panel JSON are explicitly out of scope.
 All tools are read-only. Version 0.1 never creates, edits, deletes, silences, acknowledges,
 or pauses anything in Grafana.
 
+## Limits
+
+Every limit below is enforced by the plugin, not by Grafana. Whenever something is trimmed,
+`meta.truncated` and the pre-truncation totals say so.
+
+| Limit | Value |
+| --- | --- |
+| Points per series (`max_points`) | 200 by default, 500 maximum. Prometheus returns both endpoints, so a range of `n` seconds at step `s` yields `floor(n / s) + 1` points |
+| Range length (`grafana_query_range`) | 31 days |
+| Total points in one range response | 20000; series past that are dropped whole, never cut in half |
+| Series per query | `maxSeries`, 100 by default |
+| Alert rules per tool (`grafana_alert_state`, `grafana_list_alert_rules`) | 500 matching rules; the rest cannot be reached by paging, so use the filters |
+| Alert instances per rule | 10 by default, 50 maximum |
+| Page size | 20 by default, 100 maximum |
+| Upstream error text | 200 characters, HTTP 400 only |
+
+`grafana_alert_state` returns `firing`, `pending`, and `unknown` rules by default — **`inactive`
+rules are excluded** unless you ask for them with `state`.
+
 ## Requirements
 
 - DeepSeek Harness with compatible `@deepseek-ai/dsh-tools` APIs

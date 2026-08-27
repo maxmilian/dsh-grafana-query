@@ -22,6 +22,24 @@
 
 所有工具皆為唯讀。v0.1 不會在 Grafana 建立、修改、刪除、silence、ack 或暫停任何東西。
 
+## 硬性上限
+
+以下上限都由插件本身強制，與 Grafana 無關。任何一處被截斷時，`meta.truncated` 與截斷前的總數都會標示出來。
+
+| 項目 | 值 |
+| --- | --- |
+| 每條 series 的點數（`max_points`） | 預設 200、上限 500。Prometheus 兩端都會回傳，因此 `n` 秒的區間搭配 step `s` 會得到 `floor(n / s) + 1` 個點 |
+| 區間長度（`grafana_query_range`） | 31 天 |
+| 單次區間查詢的總點數 | 20000；超過的 series 會被整條捨棄，不會砍半截 |
+| 單次查詢的 series 數 | `maxSeries`，預設 100 |
+| 告警規則筆數（`grafana_alert_state`、`grafana_list_alert_rules`） | 符合條件的前 500 筆；其餘無法靠翻頁取得，請用篩選參數 |
+| 每條規則的告警 instance | 預設 10、上限 50 |
+| 每頁筆數 | 預設 20、上限 100 |
+| 上游錯誤文字 | 200 字元，且僅 HTTP 400 才透出 |
+
+`grafana_alert_state` 預設只回傳 `firing`、`pending` 與 `unknown` 的規則——**`inactive` 規則預設不會出現**，
+需要時請用 `state` 明確指定。
+
 ## Requirements
 
 - 具備相容 `@deepseek-ai/dsh-tools` API 的 DeepSeek Harness

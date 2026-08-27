@@ -24,6 +24,25 @@ npm の `dsh-grafana` とは別物です。あちらは dashboard JSON を Grafa
 すべてのツールは読み取り専用です。v0.1 は Grafana 上で作成・編集・削除・silence・ack・
 一時停止のいずれも行いません。
 
+## 上限
+
+以下の上限はいずれも Grafana ではなくプラグイン側で強制されます。何かが切り詰められた場合は
+`meta.truncated` と切り詰め前の総数で示されます。
+
+| 項目 | 値 |
+| --- | --- |
+| series ごとのポイント数（`max_points`） | 既定 200、最大 500。Prometheus は両端を返すため、`n` 秒の範囲に step `s` を指定すると `floor(n / s) + 1` 個のポイントになります |
+| 範囲の長さ（`grafana_query_range`） | 31 日 |
+| 1 回の範囲クエリの合計ポイント数 | 20000。超えた series は丸ごと破棄され、途中で切られることはありません |
+| 1 回のクエリの series 数 | `maxSeries`、既定 100 |
+| アラートルール件数（`grafana_alert_state`、`grafana_list_alert_rules`） | 一致したルールの先頭 500 件。それ以降はページ送りでも取得できないため、絞り込み条件を使ってください |
+| ルールごとのアラートインスタンス | 既定 10、最大 50 |
+| 1 ページあたりの件数 | 既定 20、最大 100 |
+| 上流のエラーテキスト | 200 文字、HTTP 400 のときのみ |
+
+`grafana_alert_state` は既定で `firing`、`pending`、`unknown` のルールのみを返します——**`inactive`
+のルールは既定では表示されません**。必要な場合は `state` で明示してください。
+
 ## Requirements
 
 - 互換性のある `@deepseek-ai/dsh-tools` API を備えた DeepSeek Harness
