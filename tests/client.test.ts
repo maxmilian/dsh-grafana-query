@@ -995,8 +995,11 @@ describe('timestamp validation', () => {
   it.each(BAD_INSTANTS)('rejects %o as an instant query time', async (time) => {
     const fetchImpl = vi.fn()
     expect(
-      (await captureError(clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up', time })))
-        .code,
+      (
+        await captureError(
+          clientWith(fetchImpl).query({ datasourceUid: 'prom-1', query: 'up', time }),
+        )
+      ).code,
     ).toBe('INVALID_INPUT')
     expect(fetchImpl).not.toHaveBeenCalled()
   })

@@ -638,8 +638,7 @@ function assertMaxPoints(value = DEFAULT_MAX_POINTS): number {
 }
 
 const UNIX_SECONDS_PATTERN = /^-?\d+(?:\.\d+)?$/
-const RFC3339_PATTERN =
-  /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$/
+const RFC3339_PATTERN = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$/
 
 /**
  * Parses a timestamp into Unix seconds, accepting only the two forms the tool
