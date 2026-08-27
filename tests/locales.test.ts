@@ -38,6 +38,14 @@ describe('tool metadata locales', () => {
     }
   })
 
+  it('never claims that grafana_health validates the token', () => {
+    for (const locale of LOCALES) {
+      const description = grafanaMessages(locale).healthDescription
+      expect(description, locale).not.toMatch(/token/i)
+      expect(description, locale).toMatch(/version|版本|バージョン/)
+    }
+  })
+
   it('mentions the default alert states in every alert_state description', () => {
     for (const locale of LOCALES) {
       const description = grafanaMessages(locale).alertStateDescription

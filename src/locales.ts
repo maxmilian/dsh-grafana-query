@@ -38,7 +38,8 @@ export interface GrafanaMessages {
 }
 
 const ENGLISH: GrafanaMessages = {
-  healthDescription: 'Check that the configured Grafana instance is reachable and the token works.',
+  healthDescription:
+    'Check that the configured Grafana instance is reachable and report its version. This endpoint does not require authentication, so it does not validate the configured credentials.',
   healthTitle: 'Check Grafana health',
   datasourcesDescription:
     'List Grafana data sources with their uid, type, and access mode. Run this first to get the uid needed by the query tools.',
@@ -80,7 +81,8 @@ const ENGLISH: GrafanaMessages = {
 }
 
 const TRADITIONAL_CHINESE: GrafanaMessages = {
-  healthDescription: '檢查設定的 Grafana 是否可連線、token 是否有效。',
+  healthDescription:
+    '檢查設定的 Grafana 是否可連線並回報版本。此端點不需認證，因此不會驗證設定的憑證。',
   healthTitle: '檢查 Grafana 健康狀態',
   datasourcesDescription:
     '列出 Grafana datasource 的 uid、type 與 access 模式。查詢工具需要的 uid 由此取得，請先呼叫此工具。',
@@ -121,7 +123,8 @@ const TRADITIONAL_CHINESE: GrafanaMessages = {
 }
 
 const SIMPLIFIED_CHINESE: GrafanaMessages = {
-  healthDescription: '检查配置的 Grafana 是否可连接、token 是否有效。',
+  healthDescription:
+    '检查配置的 Grafana 是否可连接并返回版本。此端点不需要认证，因此不会验证配置的凭证。',
   healthTitle: '检查 Grafana 健康状态',
   datasourcesDescription:
     '列出 Grafana datasource 的 uid、type 与 access 模式。查询工具需要的 uid 由此获取，请先调用此工具。',
@@ -162,7 +165,8 @@ const SIMPLIFIED_CHINESE: GrafanaMessages = {
 }
 
 const JAPANESE: GrafanaMessages = {
-  healthDescription: '設定された Grafana に接続できるか、token が有効かを確認します。',
+  healthDescription:
+    '設定された Grafana に接続できるかを確認し、バージョンを返します。このエンドポイントは認証を必要としないため、設定した認証情報の検証は行いません。',
   healthTitle: 'Grafana のヘルスを確認',
   datasourcesDescription:
     'Grafana のデータソースの uid、type、access モードを一覧します。クエリツールに必要な uid はここで取得するため、最初に実行してください。',

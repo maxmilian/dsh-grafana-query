@@ -163,7 +163,7 @@ metadata 本身回 404 的情況在上表已直接拋 `NOT_FOUND`，不會走到
 
 ### 3.1 `grafana_health`
 
-- **用途**：確認 baseUrl 與 token 設定正確、Grafana 可達。診斷第一站。
+- **用途**：確認 baseUrl 設定正確、Grafana 可達，並回報版本。診斷第一站。**注意：`/api/health` 免認證，因此本工具不驗證 token**——token 是否有效要靠 `grafana_list_datasources` 這類需要權限的端點才看得出來。工具描述與 README 不得宣稱它能驗 token。
 - **Endpoint**：`GET {base}api/health`
 - **參數**：無
 - **回應裁剪策略**：回應本身極小（`{database, version, commit}`）。白名單保留 `database`、`version`；`commit` 丟棄（對 agent 無用）。`meta` 為 `{}`。
@@ -705,7 +705,7 @@ const OUTPUT_SCHEMA = {
 - **已定（C1）：`datasource_uid` 必填** —— 明確可預測，且第一次 `grafana_list_datasources` 就把 metadata cache 填好，type 檢查才有依據；多一次工具呼叫遠優於猜錯 datasource 查出錯誤數據。
 - **已定（D1）：`grafana_alert_state` 走 `/api/prometheus/grafana/api/v1/rules`** —— 一次拿到規則名稱、folder、state 與 instance，脈絡完整且格式好裁剪；Alertmanager v2 端點會丟失規則層脈絡。
 - **已定（E1）：`step` 省略時自動降採樣、明確指定卻會超量時直接拒絕** —— 使用者沒指定時我們有權替他選；明確指定卻被偷改，agent 會拿到與它以為的不同解析度的資料而不自知，比報錯危險得多。
-- **已定（F1）：加入第 6 個工具 `grafana_health`** —— 回應極小、約 15 行成本，是「連線與認證設定對不對」最快的診斷入口，也與 `dsh-sonarqube` 的 `sonarqube_system_status` 形狀一致。
+- **已定（F1）：加入第 6 個工具 `grafana_health`** —— 回應極小、約 15 行成本，是「baseUrl 設對沒、Grafana 通不通、版本多少」最快的診斷入口，也與 `dsh-sonarqube` 的 `sonarqube_system_status` 形狀一致。它**不涵蓋認證診斷**（端點免認證）。
 - **已定（G1-maxSeries）：`maxSeries` 開放為 config 欄位，預設 100、範圍 1–1000** —— 這是唯一真的會因環境而異的裁剪參數（自架小環境 vs Cloud 大 stack），成本只有一行 Schemastery 宣告加一行驗證。
 - **已定（H1）：不做 datasource 白名單/黑名單** —— 應由 service account 的 `datasources:uid:*` 細粒度權限收斂，插件內再做一層是重複且給人虛假的安全感。
 - **已定（I1）：測試用手寫 stub `fetchImplementation` + `jsonResponse()` helper，不導入 MSW** —— 與 `dsh-sonarqube` / `dsh-forge` 形狀一致，且 bounded-body 測試需要自訂 `ReadableStream`，MSW 反而礙事。

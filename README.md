@@ -14,7 +14,7 @@ and alert state. Dashboard and panel JSON are explicitly out of scope.
 
 | Tool | Purpose |
 | --- | --- |
-| `grafana_health` | Check that the instance is reachable and the token works. |
+| `grafana_health` | Check that the instance is reachable and report its version. |
 | `grafana_list_datasources` | List data sources with uid, type, and access mode. Run this first. |
 | `grafana_query` | Run an instant PromQL query through the data source proxy. |
 | `grafana_query_range` | Run a range PromQL query with an enforced step and point budget. |
@@ -57,7 +57,7 @@ Cloud data endpoints and does **not** work with this API.
 
 | Tool | Required permission |
 | --- | --- |
-| `grafana_health` | none |
+| `grafana_health` | none — `/api/health` needs no authentication, so this tool cannot tell you whether the token is valid. Use `grafana_list_datasources` for that. |
 | `grafana_list_datasources` | `datasources:read` |
 | `grafana_query`, `grafana_query_range` | `datasources:query` (plus `datasources:read` for pre-flight type checks) |
 | `grafana_alert_state` | `alert.rules:read` |

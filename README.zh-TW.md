@@ -13,7 +13,7 @@
 
 | 工具 | 用途 |
 | --- | --- |
-| `grafana_health` | 確認實例可連線、token 有效。 |
+| `grafana_health` | 確認實例可連線並回報版本。 |
 | `grafana_list_datasources` | 列出 datasource 的 uid、type 與 access 模式。請先呼叫這個。 |
 | `grafana_query` | 透過 datasource proxy 執行 instant PromQL 查詢。 |
 | `grafana_query_range` | 執行區間 PromQL 查詢，強制套用 step 與點數上限。 |
@@ -55,7 +55,7 @@ Grafana service account token（建議）與舊版 API key 都可以用——兩
 
 | 工具 | 所需權限 |
 | --- | --- |
-| `grafana_health` | 無 |
+| `grafana_health` | 無——`/api/health` 不需認證，因此本工具無法判斷 token 是否有效；要驗證 token 請用 `grafana_list_datasources`。 |
 | `grafana_list_datasources` | `datasources:read` |
 | `grafana_query`、`grafana_query_range` | `datasources:query`（另有 `datasources:read` 才能做前置型別檢查） |
 | `grafana_alert_state` | `alert.rules:read` |

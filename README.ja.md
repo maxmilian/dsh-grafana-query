@@ -14,7 +14,7 @@ npm の `dsh-grafana` とは別物です。あちらは dashboard JSON を Grafa
 
 | ツール | 目的 |
 | --- | --- |
-| `grafana_health` | インスタンスへ接続でき、token が有効かを確認します。 |
+| `grafana_health` | インスタンスへ接続できるかを確認し、バージョンを返します。 |
 | `grafana_list_datasources` | データソースの uid、type、access モードを一覧します。最初に実行してください。 |
 | `grafana_query` | データソースプロキシ経由で instant PromQL クエリを実行します。 |
 | `grafana_query_range` | step とポイント数の上限を強制したうえで範囲 PromQL クエリを実行します。 |
@@ -57,7 +57,7 @@ token（`glc_`）は Cloud のデータエンドポイント用であり、こ�
 
 | ツール | 必要な権限 |
 | --- | --- |
-| `grafana_health` | なし |
+| `grafana_health` | なし——`/api/health` は認証を必要としないため、このツールでは token の有効性を判定できません。token の検証には `grafana_list_datasources` を使ってください。 |
 | `grafana_list_datasources` | `datasources:read` |
 | `grafana_query`、`grafana_query_range` | `datasources:query`（事前の型チェックには `datasources:read` も必要） |
 | `grafana_alert_state` | `alert.rules:read` |
