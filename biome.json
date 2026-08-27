@@ -16,6 +16,12 @@
       "trailingCommas": "all"
     }
   },
+  "overrides": [
+    {
+      "includes": ["scripts/**"],
+      "linter": { "rules": { "suspicious": { "noConsole": "off" } } }
+    }
+  ],
   "linter": {
     "enabled": true,
     "rules": {
