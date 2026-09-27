@@ -1,7 +1,11 @@
-import type { JsonValue as DshJsonValue } from '@deepseek-ai/dsh-tools'
-
 /** The canonical lossless JSON value accepted by DeepSeek Harness tool output. */
-export type JsonValue = DshJsonValue
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue }
 
 /** A JSON object with string keys. */
 export type JsonObject = { [key: string]: JsonValue }
