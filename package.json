@@ -1,6 +1,6 @@
 {
   "name": "dsh-grafana-query",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Read-only Grafana metrics and alert tools for DeepSeek Harness.",
   "homepage": "https://github.com/maxmilian/dsh-grafana-query#readme",
   "bugs": {
